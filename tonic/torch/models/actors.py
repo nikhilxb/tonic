@@ -122,16 +122,27 @@ class Actor(torch.nn.Module):
         self.torso = torso
         self.head = head
 
-    def initialize(
-        self, observation_space, action_space, observation_normalizer=None
-    ):
-        size = self.encoder.initialize(
-            observation_space, observation_normalizer)
-        size = self.torso.initialize(size)
+    def initialize(self, observation_space, action_space, observation_normalizer=None):
+        size = self.encoder.initialize(observation_space, action_space, observation_normalizer)
+        if self.torso is not None:
+            size = self.torso.initialize(size)
         action_size = action_space.shape[0]
         self.head.initialize(size, action_size)
 
     def forward(self, *inputs):
         out = self.encoder(*inputs)
-        out = self.torso(out)
+        if self.torso is not None:
+            out = self.torso(out)
         return self.head(out)
+
+
+class ActorOnly(torch.nn.Module):
+    def __init__(self, actor, observation_normalizer=None):
+        super().__init__()
+        self.actor = actor
+        self.observation_normalizer = observation_normalizer
+
+    def initialize(self, observation_space, action_space):
+        if self.observation_normalizer:
+            self.observation_normalizer.initialize(observation_space.shape)
+        self.actor.initialize(observation_space, action_space, self.observation_normalizer)
