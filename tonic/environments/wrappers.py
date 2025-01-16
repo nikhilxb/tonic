@@ -1,6 +1,8 @@
 '''Environment wrappers.'''
 
 import gym
+import gym.spaces
+import gym.spaces.utils
 import numpy as np
 
 
@@ -15,6 +17,8 @@ class ActionRescaler(gym.ActionWrapper):
         self.action_space = gym.spaces.Box(low=-high, high=high)
         true_low = env.action_space.low
         true_high = env.action_space.high
+        assert np.all(np.isfinite(true_low))
+        assert np.all(np.isfinite(true_high))
         self.bias = (true_high + true_low) / 2
         self.scale = (true_high - true_low) / 2
 
@@ -51,4 +55,28 @@ class TimeFeature(gym.Wrapper):
         prop = self.steps / self.max_episode_steps
         v = self.low + (self.high - self.low) * prop
         observation = np.append(observation, v)
+        return observation, reward, done, info
+
+
+class FlattenObservationAction(gym.Wrapper):
+    '''Flattens both the `observation_space` and the `action_space`.'''
+    def __init__(self, env):
+        super().__init__(env)
+        self.observation_space = gym.spaces.utils.flatten_space(self.env.observation_space)
+        self.action_space = gym.spaces.utils.flatten_space(self.env.action_space)
+        
+        # Monkey-patch the spaces with pointer to originals. Useful for model modules that need to
+        # work with unflattened observations/actions.
+        self.observation_space.original = self.env.observation_space
+        self.action_space.original = self.env.action_space
+
+    def reset(self, **kwargs):
+        observation = self.env.reset(**kwargs)
+        observation = gym.spaces.utils.flatten(self.env.observation_space, observation)
+        return observation
+    
+    def step(self, action):
+        action = gym.spaces.utils.unflatten(self.env.action_space, action)
+        observation, reward, done, info = self.env.step(action)
+        observation = gym.spaces.utils.flatten(self.env.observation_space, observation)
         return observation, reward, done, info
