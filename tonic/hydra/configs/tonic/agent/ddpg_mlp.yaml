@@ -27,3 +27,6 @@ model:
       _target_: tonic.torch.models.ValueHead
   observation_normalizer:
     _target_: tonic.torch.normalizers.MeanStd
+replay:
+  _target_: tonic.replays.Buffer
+  return_steps: 5
