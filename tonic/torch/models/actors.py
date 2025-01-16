@@ -99,15 +99,17 @@ class GaussianPolicyHead(torch.nn.Module):
 
 
 class DeterministicPolicyHead(torch.nn.Module):
-    def __init__(self, activation=torch.nn.Tanh, fn=None):
+    def __init__(self, activation=torch.nn.Tanh, bias=True, fn=None):
         super().__init__()
         self.activation = activation
+        self.bias = bias
         self.fn = fn
 
     def initialize(self, input_size, action_size):
         self.action_layer = torch.nn.Sequential(
-            torch.nn.Linear(input_size, action_size),
-            self.activation())
+            torch.nn.Linear(input_size, action_size, bias=self.bias),
+            self.activation(),
+        )
         if self.fn is not None:
             self.action_layer.apply(self.fn)
 
@@ -134,15 +136,3 @@ class Actor(torch.nn.Module):
         if self.torso is not None:
             out = self.torso(out)
         return self.head(out)
-
-
-class ActorOnly(torch.nn.Module):
-    def __init__(self, actor, observation_normalizer=None):
-        super().__init__()
-        self.actor = actor
-        self.observation_normalizer = observation_normalizer
-
-    def initialize(self, observation_space, action_space):
-        if self.observation_normalizer:
-            self.observation_normalizer.initialize(observation_space.shape)
-        self.actor.initialize(observation_space, action_space, self.observation_normalizer)

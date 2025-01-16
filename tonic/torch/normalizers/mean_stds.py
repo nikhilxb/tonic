@@ -62,6 +62,26 @@ class MeanStd(torch.nn.Module):
         self.new_sum_sq = 0
         self._update(self.mean.astype(np.float32), self.std.astype(np.float32))
 
+    def get_new_stats(self):
+        return (self.new_sum, self.new_sum_sq, self.new_count)
+
+    def record_new_stats(self, new_stats):
+        new_sum, new_sum_sq, new_count = new_stats
+        self.new_sum += new_sum
+        self.new_sum_sq += new_sum_sq
+        self.new_count += new_count
+
+    def get_state(self):
+        return (self.mean, self.mean_sq, self.count)
+
+    def set_state(self, state):
+        self.mean, self.mean_sq, self.count = state
+        self.std = self._compute_std(self.mean, self.mean_sq)
+        self.new_sum = 0
+        self.new_sum_sq = 0
+        self.new_count = 0
+        self._update(self.mean.astype(np.float32), self.std.astype(np.float32))
+
     def _compute_std(self, mean, mean_sq):
         var = mean_sq - np.square(mean)
         var = np.maximum(var, 0)

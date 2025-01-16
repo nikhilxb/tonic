@@ -5,6 +5,25 @@ import torch
 from tonic.torch import models  # noqa
 
 
+class ActorOnly(torch.nn.Module):
+    def __init__(self, actor, observation_normalizer=None):
+        super().__init__()
+        self.actor = actor
+        self.observation_normalizer = observation_normalizer
+
+    def initialize(self, observation_space, action_space):
+        if self.observation_normalizer:
+            self.observation_normalizer.initialize(observation_space.shape)
+        self.actor.initialize(observation_space, action_space, self.observation_normalizer)
+
+    def reset(self):
+        if hasattr(self.actor, 'reset') and callable(self.actor.reset):
+            self.actor.reset()
+
+    def forward(self, *inputs):
+        return self.actor(*inputs)
+
+
 class ActorCritic(torch.nn.Module):
     def __init__(
         self, actor, critic, observation_normalizer=None,

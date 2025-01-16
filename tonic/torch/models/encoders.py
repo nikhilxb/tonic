@@ -3,8 +3,7 @@ import torch
 
 class ObservationEncoder(torch.nn.Module):
     def initialize(
-        self, observation_space, action_space=None,
-        observation_normalizer=None,
+        self, observation_space, action_space, observation_normalizer=None
     ):
         self.observation_normalizer = observation_normalizer
         observation_size = observation_space.shape[0]
