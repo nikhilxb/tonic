@@ -30,7 +30,7 @@ class PPO(agents.A2C):
         keys = 'observations', 'actions', 'advantages', 'log_probs', 'returns'
 
         # Update both the actor and the critic multiple times.
-        for batch in self.replay.get(*keys):
+        for batch in self.replay.get_batches(*keys):
             if train_actor:
                 batch = {k: torch.as_tensor(v) for k, v in batch.items()}
                 infos = self._update_actor_critic(**batch)
@@ -57,6 +57,9 @@ class PPO(agents.A2C):
             self.model.observation_normalizer.update()
         if self.model.return_normalizer:
             self.model.return_normalizer.update()
+
+        # Reset the replay.
+        self.replay.reset()
 
     def _update_actor_critic(
         self, observations, actions, advantages, log_probs, returns

@@ -1,10 +1,13 @@
+import typing as T
+
 import torch
+import gym.spaces
 
-from tonic import logger, replays  # noqa
-from tonic.torch import agents, models, normalizers, updaters
+from tonic import logger
+from tonic.torch import agents, models, replays, updaters
 
 
-def default_model():
+def a2c_default_model():
     return models.ActorCritic(
         actor=models.Actor(
             encoder=models.ObservationEncoder(),
@@ -14,31 +17,46 @@ def default_model():
             encoder=models.ObservationEncoder(),
             torso=models.MLP((64, 64), torch.nn.Tanh),
             head=models.ValueHead()),
-        observation_normalizer=normalizers.MeanStd())
+        observation_normalizer=models.MeanStdNormalizer())
+
+
+A2CBufferKeys = T.Literal[
+    'observations', 'next_observations', 'actions', 'rewards', 'resets', 'terminations', 'returns', 'values', 'next_values', 'advantages', 'log_probs'
+]
 
 
 class A2C(agents.Agent):
     '''Advantage Actor Critic (aka Vanilla Policy Gradient).
     A3C: https://arxiv.org/pdf/1602.01783.pdf
     '''
+    model: models.ActorCritic
 
     def __init__(
-        self, model=None, replay=None, actor_updater=None, critic_updater=None
+        self,
+        model: models.ActorCritic | None = None,
+        replay: replays.OnPolicyBuffer[A2CBufferKeys] | None = None,
+        actor_updater: updaters.StochasticPolicyGradient | None = None,
+        critic_updater: updaters.VRegression | None = None,
     ):
-        self.model = model or default_model()
-        self.replay = replay or replays.Segment()
-        self.actor_updater = actor_updater or \
-            updaters.StochasticPolicyGradient()
+        self.model = model or a2c_default_model()
+        self.replay = replay or replays.OnPolicyBuffer[A2CBufferKeys]()
+        self.actor_updater = actor_updater or updaters.StochasticPolicyGradient()
         self.critic_updater = critic_updater or updaters.VRegression()
 
-    def initialize(self, observation_space, action_space, seed=None):
-        super().initialize(seed=seed)
+    def initialize(
+        self,
+        observation_space: gym.spaces.Dict,
+        action_space: gym.spaces.Dict,
+        seed: int,
+    ):
+        super().initialize(seed)
         self.model.initialize(observation_space, action_space)
         self.replay.initialize(seed)
         self.actor_updater.initialize(self.model)
         self.critic_updater.initialize(self.model)
 
-    def step(self, observations, steps):
+    @T.override
+    def step(self, observations: torch.Tensor | dict[str, torch.Tensor], steps: int):
         # Sample actions and get their log-probabilities for training.
         actions, log_probs = self._step(observations)
         actions = actions.numpy()
@@ -51,16 +69,30 @@ class A2C(agents.Agent):
 
         return actions
 
-    def test_step(self, observations, steps):
+    @T.override
+    def test_step(self, observations: torch.Tensor | dict[str, torch.Tensor], steps: int):
         # Sample actions for testing.
         return self._test_step(observations).numpy()
 
-    def update(self, observations, rewards, resets, terminations, steps):
+    @T.override
+    def update(
+        self,
+        observations: torch.Tensor | dict[str, torch.Tensor],
+        rewards: torch.Tensor,
+        resets: torch.Tensor,
+        terminations: torch.Tensor,
+        steps: int,
+    ):
         # Store the last transitions in the replay.
-        self.replay.store(
-            observations=self.last_observations, actions=self.last_actions,
-            next_observations=observations, rewards=rewards, resets=resets,
-            terminations=terminations, log_probs=self.last_log_probs)
+        self.replay.record({
+            'observations': self.last_observations,
+            'actions': self.last_actions,
+            'next_observations': observations,
+            'rewards': rewards,
+            'resets': resets,
+            'terminations': terminations,
+            'log_probs': self.last_log_probs,
+        })
 
         # Prepare to update the normalizers.
         if self.model.observation_normalizer:
@@ -104,19 +136,17 @@ class A2C(agents.Agent):
         values, next_values = self._evaluate(**batch)
         values, next_values = values.numpy(), next_values.numpy()
         self.replay.compute_returns(values, next_values)
+        self.replay.compute_advantages(normalize=True)
 
         # Update the actor once.
-        keys = 'observations', 'actions', 'advantages', 'log_probs'
-        batch = self.replay.get_full(*keys)
-        batch = {k: torch.as_tensor(v) for k, v in batch.items()}
+        batch = self.replay.get_full('observations', 'actions', 'advantages', 'log_probs')
         infos = self.actor_updater(**batch)
         for k, v in infos.items():
             logger.store('actor/' + k, v.numpy())
 
         # Update the critic multiple times.
-        for batch in self.replay.get('observations', 'returns'):
-            batch = {k: torch.as_tensor(v) for k, v in batch.items()}
-            infos = self.critic_updater(**batch)
+        for minibatch in self.replay.get_batches('observations', 'returns'):
+            infos = self.critic_updater(**minibatch)
             for k, v in infos.items():
                 logger.store('critic/' + k, v.numpy())
 
@@ -125,3 +155,6 @@ class A2C(agents.Agent):
             self.model.observation_normalizer.update()
         if self.model.return_normalizer:
             self.model.return_normalizer.update()
+
+        # Reset the replay.
+        self.replay.reset()

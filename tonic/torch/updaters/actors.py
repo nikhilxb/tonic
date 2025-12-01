@@ -1,464 +1,774 @@
+import typing as T
+
 import torch
 
-from tonic.torch import models, updaters  # noqa
+from tonic.torch import models, updaters
 
 
 FLOAT_EPSILON = 1e-8
 
 
+# Type alias for optimizer builder functions.
+OptimizerBuilder = T.Callable[[T.List[torch.nn.Parameter]], torch.optim.Optimizer]
+
+
 class StochasticPolicyGradient:
-    def __init__(self, optimizer=None, entropy_coeff=0, gradient_clip=0):
-        self.optimizer = optimizer or (
-            lambda params: torch.optim.Adam(params, lr=3e-4))
-        self.entropy_coeff = entropy_coeff
-        self.gradient_clip = gradient_clip
+  """Vanilla policy gradient updater for stochastic policies (e.g., REINFORCE, A2C)."""
 
-    def initialize(self, model):
-        self.model = model
-        self.variables = models.trainable_variables(self.model.actor)
-        self.optimizer = self.optimizer(self.variables)
+  def __init__(
+    self,
+    optimizer: OptimizerBuilder | None = None,
+    entropy_coeff: float = 0,
+    gradient_clip: float = 0,
+  ):
+    """Initialize the stochastic policy gradient updater.
+    
+    Args:
+      optimizer: Function that takes parameters and returns an optimizer.
+        Defaults to Adam with lr=3e-4.
+      entropy_coeff: Coefficient for entropy regularization (encourages exploration).
+      gradient_clip: Maximum gradient norm for clipping. 0 disables clipping.
+    """
+    self.optimizer_builder = optimizer or (lambda params: torch.optim.Adam(params, lr=3e-4))
+    self.entropy_coeff = entropy_coeff
+    self.gradient_clip = gradient_clip
 
-    def __call__(self, observations, actions, advantages, log_probs):
-        if (advantages == 0.).all():
-            loss = torch.as_tensor(0., dtype=torch.float32)
-            kl = torch.as_tensor(0., dtype=torch.float32)
-            with torch.no_grad():
-                distributions = self.model.actor(observations)
-                entropy = distributions.entropy().mean()
-                std = distributions.stddev.mean()
+  def initialize(self, model: torch.nn.Module) -> None:
+    """Initialize the updater with the model.
+    
+    Args:
+      model: Model containing the actor network.
+    """
+    self.model = model
+    self.variables = models.trainable_variables(self.model.actor)
+    self.optimizer = self.optimizer_builder(self.variables)
 
-        else:
-            self.optimizer.zero_grad()
-            distributions = self.model.actor(observations)
-            new_log_probs = distributions.log_prob(actions).sum(dim=-1)
-            loss = -(advantages * new_log_probs).mean()
-            entropy = distributions.entropy().mean()
-            if self.entropy_coeff != 0:
-                loss -= self.entropy_coeff * entropy
+  def __call__(
+    self,
+    observations: torch.Tensor,
+    actions: torch.Tensor,
+    advantages: torch.Tensor,
+    log_probs: torch.Tensor,
+  ) -> dict[str, torch.Tensor]:
+    """Perform a policy gradient update.
+    
+    Args:
+      observations: State observations, shape [batch_size, obs_dim].
+      actions: Actions taken, shape [batch_size, action_dim].
+      advantages: Advantage estimates, shape [batch_size].
+      log_probs: Log probabilities of actions under old policy, shape [batch_size].
+      
+    Returns:
+      Dictionary containing loss, KL divergence, entropy, and policy std.
+    """
+    # Skip update if all advantages are zero.
+    if (advantages == 0.).all():
+      loss = torch.as_tensor(0., dtype=torch.float32)
+      kl = torch.as_tensor(0., dtype=torch.float32)
+      with torch.no_grad():
+        distributions = self.model.actor(observations)
+        entropy = distributions.entropy().mean()
+        std = distributions.stddev.mean()
 
-            loss.backward()
-            if self.gradient_clip > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    self.variables, self.gradient_clip)
-            self.optimizer.step()
+    else:
+      self.optimizer.zero_grad()
+      distributions = self.model.actor(observations)  # [batch_size, action_dim]
+      new_log_probs = distributions.log_prob(actions).sum(dim=-1)  # [batch_size]
+      # Policy gradient loss: -E[A * log(pi(a|s))].
+      loss = -(advantages * new_log_probs).mean()
+      entropy = distributions.entropy().mean()
+      if self.entropy_coeff != 0:
+        loss -= self.entropy_coeff * entropy
 
-            loss = loss.detach()
-            kl = (log_probs - new_log_probs).mean().detach()
-            entropy = entropy.detach()
-            std = distributions.stddev.mean().detach()
+      loss.backward()
+      if self.gradient_clip > 0:
+        torch.nn.utils.clip_grad_norm_(self.variables, self.gradient_clip)
+      self.optimizer.step()
 
-        return dict(loss=loss, kl=kl, entropy=entropy, std=std)
+      loss = loss.detach()
+      kl = (log_probs - new_log_probs).mean().detach()
+      entropy = entropy.detach()
+      std = distributions.stddev.mean().detach()
+
+    return dict(loss=loss, kl=kl, entropy=entropy, std=std)
 
 
 class ClippedRatio:
-    def __init__(
-        self, optimizer=None, ratio_clip=0.2, kl_threshold=0.015,
-        entropy_coeff=0, gradient_clip=0
-    ):
-        self.optimizer = optimizer or (
-            lambda params: torch.optim.Adam(params, lr=3e-4))
-        self.ratio_clip = ratio_clip
-        self.kl_threshold = kl_threshold
-        self.entropy_coeff = entropy_coeff
-        self.gradient_clip = gradient_clip
+  """PPO (Proximal Policy Optimization) updater with clipped surrogate objective."""
 
-    def initialize(self, model):
-        self.model = model
-        self.variables = models.trainable_variables(self.model.actor)
-        self.optimizer = self.optimizer(self.variables)
+  def __init__(
+    self,
+    optimizer: OptimizerBuilder | None = None,
+    ratio_clip: float = 0.2,
+    kl_threshold: float = 0.015,
+    entropy_coeff: float = 0,
+    gradient_clip: float = 0,
+  ):
+    """Initialize the clipped ratio (PPO) updater.
+    
+    Args:
+      optimizer: Function that takes parameters and returns an optimizer.
+        Defaults to Adam with lr=3e-4.
+      ratio_clip: Clipping range for probability ratios [1-clip, 1+clip].
+      kl_threshold: KL divergence threshold for early stopping.
+      entropy_coeff: Coefficient for entropy regularization (encourages exploration).
+      gradient_clip: Maximum gradient norm for clipping. 0 disables clipping.
+    """
+    self.optimizer_builder = optimizer or (lambda params: torch.optim.Adam(params, lr=3e-4))
+    self.ratio_clip = ratio_clip
+    self.kl_threshold = kl_threshold
+    self.entropy_coeff = entropy_coeff
+    self.gradient_clip = gradient_clip
 
-    def __call__(self, observations, actions, advantages, log_probs):
-        if (advantages == 0.).all():
-            loss = torch.as_tensor(0., dtype=torch.float32)
-            kl = torch.as_tensor(0., dtype=torch.float32)
-            clip_fraction = torch.as_tensor(0., dtype=torch.float32)
-            with torch.no_grad():
-                distributions = self.model.actor(observations)
-                entropy = distributions.entropy().mean()
-                std = distributions.stddev.mean()
+  def initialize(self, model: torch.nn.Module) -> None:
+    """Initialize the updater with the model.
+    
+    Args:
+      model: Model containing the actor network.
+    """
+    self.model = model
+    self.variables = models.trainable_variables(self.model.actor)
+    self.optimizer = self.optimizer_builder(self.variables)
 
-        else:
-            self.optimizer.zero_grad()
-            distributions = self.model.actor(observations)
-            new_log_probs = distributions.log_prob(actions).sum(dim=-1)
-            ratios_1 = torch.exp(new_log_probs - log_probs)
-            surrogates_1 = advantages * ratios_1
-            ratio_low = 1 - self.ratio_clip
-            ratio_high = 1 + self.ratio_clip
-            ratios_2 = torch.clamp(ratios_1, ratio_low, ratio_high)
-            surrogates_2 = advantages * ratios_2
-            loss = -(torch.min(surrogates_1, surrogates_2)).mean()
-            entropy = distributions.entropy().mean()
-            if self.entropy_coeff != 0:
-                loss -= self.entropy_coeff * entropy
+  def __call__(
+    self,
+    observations: torch.Tensor,
+    actions: torch.Tensor,
+    advantages: torch.Tensor,
+    log_probs: torch.Tensor,
+  ) -> dict[str, torch.Tensor]:
+    """Perform a PPO update with clipped surrogate objective.
+    
+    Args:
+      observations: State observations, shape [batch_size, obs_dim].
+      actions: Actions taken, shape [batch_size, action_dim].
+      advantages: Advantage estimates, shape [batch_size].
+      log_probs: Log probabilities of actions under old policy, shape [batch_size].
+      
+    Returns:
+      Dictionary containing loss, KL divergence, entropy, clip fraction, std, and stop flag.
+    """
+    # Skip update if all advantages are zero.
+    if (advantages == 0.).all():
+      loss = torch.as_tensor(0., dtype=torch.float32)
+      kl = torch.as_tensor(0., dtype=torch.float32)
+      clip_fraction = torch.as_tensor(0., dtype=torch.float32)
+      with torch.no_grad():
+        distributions = self.model.actor(observations)
+        entropy = distributions.entropy().mean()
+        std = distributions.stddev.mean()
 
-            loss.backward()
-            if self.gradient_clip > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    self.variables, self.gradient_clip)
-            self.optimizer.step()
+    else:
+      self.optimizer.zero_grad()
+      distributions = self.model.actor(observations)  # [batch_size, action_dim]
+      new_log_probs = distributions.log_prob(actions).sum(dim=-1)  # [batch_size]
+      ratios_1 = torch.exp(new_log_probs - log_probs)  # [batch_size]
+      surrogates_1 = advantages * ratios_1  # [batch_size]
+      ratio_low = 1 - self.ratio_clip
+      ratio_high = 1 + self.ratio_clip
+      ratios_2 = torch.clamp(ratios_1, ratio_low, ratio_high)  # [batch_size]
+      surrogates_2 = advantages * ratios_2  # [batch_size]
+      # PPO clipped surrogate loss: -E[min(r*A, clip(r)*A)].
+      loss = -(torch.min(surrogates_1, surrogates_2)).mean()
+      entropy = distributions.entropy().mean()
+      if self.entropy_coeff != 0:
+        loss -= self.entropy_coeff * entropy
 
-            loss = loss.detach()
-            with torch.no_grad():
-                kl = (log_probs - new_log_probs).mean()
-            entropy = entropy.detach()
-            clipped = ratios_1.gt(ratio_high) | ratios_1.lt(ratio_low)
-            clip_fraction = torch.as_tensor(
-                clipped, dtype=torch.float32).mean()
-            std = distributions.stddev.mean().detach()
+      loss.backward()
+      if self.gradient_clip > 0:
+        torch.nn.utils.clip_grad_norm_(self.variables, self.gradient_clip)
+      self.optimizer.step()
 
-        return dict(
-            loss=loss, kl=kl, entropy=entropy, clip_fraction=clip_fraction,
-            std=std, stop=kl > self.kl_threshold)
+      loss = loss.detach()
+      with torch.no_grad():
+        kl = (log_probs - new_log_probs).mean()
+      entropy = entropy.detach()
+      clipped = ratios_1.gt(ratio_high) | ratios_1.lt(ratio_low)
+      clip_fraction = torch.as_tensor(clipped, dtype=torch.float32).mean()
+      std = distributions.stddev.mean().detach()
+
+    return dict(
+      loss=loss,
+      kl=kl,
+      entropy=entropy,
+      clip_fraction=clip_fraction,
+      std=std,
+      stop=kl > self.kl_threshold,
+    )
 
 
 class TrustRegionPolicyGradient:
-    def __init__(self, optimizer=None, entropy_coeff=0):
-        self.optimizer = optimizer or updaters.ConjugateGradient()
-        self.entropy_coeff = entropy_coeff
+  """TRPO (Trust Region Policy Optimization) updater using natural gradients."""
 
-    def initialize(self, model):
-        self.model = model
-        self.variables = models.trainable_variables(self.model.actor)
+  def __init__(
+    self,
+    optimizer: T.Any | None = None,
+    entropy_coeff: float = 0,
+  ):
+    """Initialize the TRPO updater.
+    
+    Args:
+      optimizer: Conjugate gradient optimizer. Defaults to ConjugateGradient().
+      entropy_coeff: Coefficient for entropy regularization (encourages exploration).
+    """
+    self.optimizer = optimizer or updaters.ConjugateGradient()
+    self.entropy_coeff = entropy_coeff
 
-    def __call__(
-        self, observations, actions, log_probs, locs, scales, advantages
-    ):
-        if (advantages == 0.).all():
-            kl = torch.as_tensor(0., dtype=torch.float32)
-            loss = torch.as_tensor(0., dtype=torch.float32)
-            steps = torch.as_tensor(0, dtype=torch.int32)
+  def initialize(self, model: torch.nn.Module) -> None:
+    """Initialize the updater with the model.
+    
+    Args:
+      model: Model containing the actor network.
+    """
+    self.model = model
+    self.variables = models.trainable_variables(self.model.actor)
 
-        else:
-            kl, loss, steps = self.optimizer.optimize(
-                loss_function=lambda: self._loss(
-                    observations, actions, log_probs, advantages),
-                constraint_function=lambda: self._kl(
-                    observations, locs, scales),
-                variables=self.variables)
+  def __call__(
+    self,
+    observations: torch.Tensor,
+    actions: torch.Tensor,
+    log_probs: torch.Tensor,
+    locs: torch.Tensor,
+    scales: torch.Tensor,
+    advantages: torch.Tensor,
+  ) -> dict[str, torch.Tensor]:
+    """Perform a TRPO update using natural gradients.
+    
+    Args:
+      observations: State observations, shape [batch_size, obs_dim].
+      actions: Actions taken, shape [batch_size, action_dim].
+      log_probs: Log probabilities of actions under old policy, shape [batch_size].
+      locs: Old policy distribution means, shape [batch_size, action_dim].
+      scales: Old policy distribution stds, shape [batch_size, action_dim].
+      advantages: Advantage estimates, shape [batch_size].
+      
+    Returns:
+      Dictionary containing loss, KL divergence, and backtracking steps.
+    """
+    # Skip update if all advantages are zero.
+    if (advantages == 0.).all():
+      kl = torch.as_tensor(0., dtype=torch.float32)
+      loss = torch.as_tensor(0., dtype=torch.float32)
+      steps = torch.as_tensor(0, dtype=torch.int32)
 
-        return dict(loss=loss, kl=kl, backtrack_steps=steps)
+    else:
+      kl, loss, steps = self.optimizer.optimize(
+        loss_function=lambda: self._loss(observations, actions, log_probs, advantages),
+        constraint_function=lambda: self._kl(observations, locs, scales),
+        variables=self.variables,
+      )
 
-    def _loss(self, observations, actions, old_log_probs, advantages):
-        distributions = self.model.actor(observations)
-        log_probs = distributions.log_prob(actions).sum(dim=-1)
-        ratios = torch.exp(log_probs - old_log_probs)
-        loss = -(ratios * advantages).mean()
-        if self.entropy_coeff != 0:
-            entropy = distributions.entropy().mean()
-            loss -= self.entropy_coeff * entropy
-        return loss
+    return dict(loss=loss, kl=kl, backtrack_steps=steps)
 
-    def _kl(self, observations, locs, scales):
-        distributions = self.model.actor(observations)
-        old_distributions = type(distributions)(locs, scales)
-        return torch.distributions.kl.kl_divergence(
-            distributions, old_distributions).mean()
+  def _loss(
+    self,
+    observations: torch.Tensor,
+    actions: torch.Tensor,
+    old_log_probs: torch.Tensor,
+    advantages: torch.Tensor,
+  ) -> torch.Tensor:
+    """Compute the surrogate policy loss.
+    
+    Args:
+      observations: State observations, shape [batch_size, obs_dim].
+      actions: Actions taken, shape [batch_size, action_dim].
+      old_log_probs: Log probabilities under old policy, shape [batch_size].
+      advantages: Advantage estimates, shape [batch_size].
+      
+    Returns:
+      Scalar loss value.
+    """
+    distributions = self.model.actor(observations)
+    log_probs = distributions.log_prob(actions).sum(dim=-1)  # [batch_size]
+    ratios = torch.exp(log_probs - old_log_probs)  # [batch_size]
+    loss = -(ratios * advantages).mean()
+    if self.entropy_coeff != 0:
+      entropy = distributions.entropy().mean()
+      loss -= self.entropy_coeff * entropy
+    return loss
+
+  def _kl(
+    self,
+    observations: torch.Tensor,
+    locs: torch.Tensor,
+    scales: torch.Tensor,
+  ) -> torch.Tensor:
+    """Compute KL divergence between old and new policies.
+    
+    Args:
+      observations: State observations, shape [batch_size, obs_dim].
+      locs: Old policy distribution means, shape [batch_size, action_dim].
+      scales: Old policy distribution stds, shape [batch_size, action_dim].
+      
+    Returns:
+      Mean KL divergence.
+    """
+    distributions = self.model.actor(observations)
+    old_distributions = type(distributions)(locs, scales)
+    return torch.distributions.kl.kl_divergence(distributions, old_distributions).mean()
 
 
 class DeterministicPolicyGradient:
-    def __init__(self, optimizer=None, gradient_clip=0):
-        self.optimizer = optimizer or (
-            lambda params: torch.optim.Adam(params, lr=1e-3))
-        self.gradient_clip = gradient_clip
+  """Deterministic policy gradient updater for continuous control (e.g., DDPG)."""
 
-    def initialize(self, model):
-        self.model = model
-        self.variables = models.trainable_variables(self.model.actor)
-        self.optimizer = self.optimizer(self.variables)
+  def __init__(
+    self,
+    optimizer: OptimizerBuilder | None = None,
+    gradient_clip: float = 0,
+  ):
+    """Initialize the deterministic policy gradient updater.
+    
+    Args:
+      optimizer: Function that takes parameters and returns an optimizer.
+        Defaults to Adam with lr=1e-3.
+      gradient_clip: Maximum gradient norm for clipping. 0 disables clipping.
+    """
+    self.optimizer_builder = optimizer or (lambda params: torch.optim.Adam(params, lr=1e-3))
+    self.gradient_clip = gradient_clip
 
-    def __call__(self, observations):
-        critic_variables = models.trainable_variables(self.model.critic)
+  def initialize(self, model: torch.nn.Module) -> None:
+    """Initialize the updater with the model.
+    
+    Args:
+      model: Model containing actor and critic networks.
+    """
+    self.model = model
+    self.variables = models.trainable_variables(self.model.actor)
+    self.optimizer = self.optimizer_builder(self.variables)
 
-        for var in critic_variables:
-            var.requires_grad = False
+  def __call__(self, observations: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Perform a deterministic policy gradient update.
+    
+    Maximizes the Q-value of actions selected by the current policy.
+    
+    Args:
+      observations: State observations, shape [batch_size, obs_dim].
+      
+    Returns:
+      Dictionary containing the actor loss.
+    """
+    critic_variables = models.trainable_variables(self.model.critic)
 
-        self.optimizer.zero_grad()
-        actions = self.model.actor(observations)
-        values = self.model.critic(observations, actions)
-        loss = -values.mean()
+    # Freeze critic during actor update.
+    for var in critic_variables:
+      var.requires_grad = False
 
-        loss.backward()
-        if self.gradient_clip > 0:
-            torch.nn.utils.clip_grad_norm_(self.variables, self.gradient_clip)
-        self.optimizer.step()
+    self.optimizer.zero_grad()
+    actions = self.model.actor(observations)  # [batch_size, action_dim]
+    values = self.model.critic(observations, actions)  # [batch_size]
+    # Maximize Q(s, mu(s)) => minimize -Q(s, mu(s)).
+    loss = -values.mean()
 
-        for var in critic_variables:
-            var.requires_grad = True
+    loss.backward()
+    if self.gradient_clip > 0:
+      torch.nn.utils.clip_grad_norm_(self.variables, self.gradient_clip)
+    self.optimizer.step()
 
-        return dict(loss=loss.detach())
+    # Unfreeze critic after actor update.
+    for var in critic_variables:
+      var.requires_grad = True
+
+    return dict(loss=loss.detach())
 
 
 class DistributionalDeterministicPolicyGradient:
-    def __init__(self, optimizer=None, gradient_clip=0):
-        self.optimizer = optimizer or (
-            lambda params: torch.optim.Adam(params, lr=1e-3))
-        self.gradient_clip = gradient_clip
+  """Deterministic policy gradient with distributional critic (e.g., D4PG)."""
 
-    def initialize(self, model):
-        self.model = model
-        self.variables = models.trainable_variables(self.model.actor)
-        self.optimizer = self.optimizer(self.variables)
+  def __init__(
+    self,
+    optimizer: OptimizerBuilder | None = None,
+    gradient_clip: float = 0,
+  ):
+    """Initialize the distributional deterministic policy gradient updater.
+    
+    Args:
+      optimizer: Function that takes parameters and returns an optimizer.
+        Defaults to Adam with lr=1e-3.
+      gradient_clip: Maximum gradient norm for clipping. 0 disables clipping.
+    """
+    self.optimizer_builder = optimizer or (lambda params: torch.optim.Adam(params, lr=1e-3))
+    self.gradient_clip = gradient_clip
 
-    def __call__(self, observations):
-        critic_variables = models.trainable_variables(self.model.critic)
+  def initialize(self, model: torch.nn.Module) -> None:
+    """Initialize the updater with the model.
+    
+    Args:
+      model: Model containing actor and distributional critic networks.
+    """
+    self.model = model
+    self.variables = models.trainable_variables(self.model.actor)
+    self.optimizer = self.optimizer_builder(self.variables)
 
-        for var in critic_variables:
-            var.requires_grad = False
+  def __call__(self, observations: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Perform a distributional deterministic policy gradient update.
+    
+    Maximizes the expected value from the critic's value distribution.
+    
+    Args:
+      observations: State observations, shape [batch_size, obs_dim].
+      
+    Returns:
+      Dictionary containing the actor loss.
+    """
+    critic_variables = models.trainable_variables(self.model.critic)
 
-        self.optimizer.zero_grad()
-        actions = self.model.actor(observations)
-        value_distributions = self.model.critic(observations, actions)
-        values = value_distributions.mean()
-        loss = -values.mean()
+    # Freeze critic during actor update.
+    for var in critic_variables:
+      var.requires_grad = False
 
-        loss.backward()
-        if self.gradient_clip > 0:
-            torch.nn.utils.clip_grad_norm_(self.variables, self.gradient_clip)
-        self.optimizer.step()
+    self.optimizer.zero_grad()
+    actions = self.model.actor(observations)  # [batch_size, action_dim]
+    value_distributions = self.model.critic(observations, actions)
+    values = value_distributions.mean()  # [batch_size]
+    # Maximize E[Z(s, mu(s))] => minimize -E[Z(s, mu(s))].
+    loss = -values.mean()
 
-        for var in critic_variables:
-            var.requires_grad = True
+    loss.backward()
+    if self.gradient_clip > 0:
+      torch.nn.utils.clip_grad_norm_(self.variables, self.gradient_clip)
+    self.optimizer.step()
 
-        return dict(loss=loss.detach())
+    # Unfreeze critic after actor update.
+    for var in critic_variables:
+      var.requires_grad = True
+
+    return dict(loss=loss.detach())
 
 
 class TwinCriticSoftDeterministicPolicyGradient:
-    def __init__(self, optimizer=None, entropy_coeff=0.2, gradient_clip=0):
-        self.optimizer = optimizer or (
-            lambda params: torch.optim.Adam(params, lr=3e-4))
-        self.entropy_coeff = entropy_coeff
-        self.gradient_clip = gradient_clip
+  """Soft actor-critic policy updater with twin critics (SAC)."""
 
-    def initialize(self, model):
-        self.model = model
-        self.variables = models.trainable_variables(self.model.actor)
-        self.optimizer = self.optimizer(self.variables)
+  def __init__(
+    self,
+    optimizer: OptimizerBuilder | None = None,
+    entropy_coeff: float = 0.2,
+    gradient_clip: float = 0,
+  ):
+    """Initialize the SAC policy updater.
+    
+    Args:
+      optimizer: Function that takes parameters and returns an optimizer.
+        Defaults to Adam with lr=3e-4.
+      entropy_coeff: Temperature parameter for entropy regularization.
+      gradient_clip: Maximum gradient norm for clipping. 0 disables clipping.
+    """
+    self.optimizer_builder = optimizer or (lambda params: torch.optim.Adam(params, lr=3e-4))
+    self.entropy_coeff = entropy_coeff
+    self.gradient_clip = gradient_clip
 
-    def __call__(self, observations):
-        critic_1_variables = models.trainable_variables(self.model.critic_1)
-        critic_2_variables = models.trainable_variables(self.model.critic_2)
-        critic_variables = critic_1_variables + critic_2_variables
+  def initialize(self, model: torch.nn.Module) -> None:
+    """Initialize the updater with the model.
+    
+    Args:
+      model: Model containing actor and twin critic networks.
+    """
+    self.model = model
+    self.variables = models.trainable_variables(self.model.actor)
+    self.optimizer = self.optimizer_builder(self.variables)
 
-        for var in critic_variables:
-            var.requires_grad = False
+  def __call__(self, observations: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Perform a soft actor-critic policy update.
+    
+    Maximizes Q(s,a) - alpha * log(pi(a|s)) using reparameterization trick.
+    
+    Args:
+      observations: State observations, shape [batch_size, obs_dim].
+      
+    Returns:
+      Dictionary containing the actor loss.
+    """
+    critic_1_variables = models.trainable_variables(self.model.critic_1)
+    critic_2_variables = models.trainable_variables(self.model.critic_2)
+    critic_variables = critic_1_variables + critic_2_variables
 
-        self.optimizer.zero_grad()
-        distributions = self.model.actor(observations)
-        if hasattr(distributions, 'rsample_with_log_prob'):
-            actions, log_probs = distributions.rsample_with_log_prob()
-        else:
-            actions = distributions.rsample()
-            log_probs = distributions.log_prob(actions)
-        log_probs = log_probs.sum(dim=-1)
-        values_1 = self.model.critic_1(observations, actions)
-        values_2 = self.model.critic_2(observations, actions)
-        values = torch.min(values_1, values_2)
-        loss = (self.entropy_coeff * log_probs - values).mean()
+    # Freeze critics during actor update.
+    for var in critic_variables:
+      var.requires_grad = False
 
-        loss.backward()
-        if self.gradient_clip > 0:
-            torch.nn.utils.clip_grad_norm_(self.variables, self.gradient_clip)
-        self.optimizer.step()
+    self.optimizer.zero_grad()
+    distributions = self.model.actor(observations)  # [batch_size, action_dim]
+    # Use reparameterization trick for differentiable sampling.
+    if hasattr(distributions, 'rsample_with_log_prob'):
+      actions, log_probs = distributions.rsample_with_log_prob()
+    else:
+      actions = distributions.rsample()  # [batch_size, action_dim]
+      log_probs = distributions.log_prob(actions)
+    log_probs = log_probs.sum(dim=-1)  # [batch_size]
+    values_1 = self.model.critic_1(observations, actions)  # [batch_size]
+    values_2 = self.model.critic_2(observations, actions)  # [batch_size]
+    values = torch.min(values_1, values_2)  # [batch_size]
+    # SAC objective: maximize Q - alpha*log(pi).
+    loss = (self.entropy_coeff * log_probs - values).mean()
 
-        for var in critic_variables:
-            var.requires_grad = True
+    loss.backward()
+    if self.gradient_clip > 0:
+      torch.nn.utils.clip_grad_norm_(self.variables, self.gradient_clip)
+    self.optimizer.step()
 
-        return dict(loss=loss.detach())
+    # Unfreeze critics after actor update.
+    for var in critic_variables:
+      var.requires_grad = True
+
+    return dict(loss=loss.detach())
 
 
 class MaximumAPosterioriPolicyOptimization:
-    def __init__(
-        self, num_samples=20, epsilon=1e-1, epsilon_penalty=1e-3,
-        epsilon_mean=1e-3, epsilon_std=1e-6, initial_log_temperature=1.,
-        initial_log_alpha_mean=1., initial_log_alpha_std=10.,
-        min_log_dual=-18., per_dim_constraining=True, action_penalization=True,
-        actor_optimizer=None, dual_optimizer=None, gradient_clip=0
-    ):
-        self.num_samples = num_samples
-        self.epsilon = epsilon
-        self.epsilon_mean = epsilon_mean
-        self.epsilon_std = epsilon_std
-        self.initial_log_temperature = initial_log_temperature
-        self.initial_log_alpha_mean = initial_log_alpha_mean
-        self.initial_log_alpha_std = initial_log_alpha_std
-        self.min_log_dual = torch.as_tensor(min_log_dual, dtype=torch.float32)
-        self.action_penalization = action_penalization
-        self.epsilon_penalty = epsilon_penalty
-        self.per_dim_constraining = per_dim_constraining
-        self.actor_optimizer = actor_optimizer or (
-            lambda params: torch.optim.Adam(params, lr=3e-4))
-        self.dual_optimizer = actor_optimizer or (
-            lambda params: torch.optim.Adam(params, lr=1e-2))
-        self.gradient_clip = gradient_clip
+  """MPO (Maximum a Posteriori Policy Optimization) updater."""
 
-    def initialize(self, model, action_space):
-        self.model = model
-        self.actor_variables = models.trainable_variables(self.model.actor)
-        self.actor_optimizer = self.actor_optimizer(self.actor_variables)
+  def __init__(
+    self,
+    num_samples: int = 20,
+    epsilon: float = 1e-1,
+    epsilon_penalty: float = 1e-3,
+    epsilon_mean: float = 1e-3,
+    epsilon_std: float = 1e-6,
+    initial_log_temperature: float = 1.0,
+    initial_log_alpha_mean: float = 1.0,
+    initial_log_alpha_std: float = 10.0,
+    min_log_dual: float = -18.0,
+    per_dim_constraining: bool = True,
+    action_penalization: bool = True,
+    actor_optimizer: OptimizerBuilder | None = None,
+    dual_optimizer: OptimizerBuilder | None = None,
+    gradient_clip: float = 0,
+  ):
+    """Initialize the MPO updater.
+    
+    Args:
+      num_samples: Number of action samples for Q-value estimation.
+      epsilon: KL constraint for temperature optimization.
+      epsilon_penalty: KL constraint for action bound penalty.
+      epsilon_mean: KL constraint for policy mean.
+      epsilon_std: KL constraint for policy std.
+      initial_log_temperature: Initial log temperature for E-step.
+      initial_log_alpha_mean: Initial log Lagrange multiplier for mean constraint.
+      initial_log_alpha_std: Initial log Lagrange multiplier for std constraint.
+      min_log_dual: Minimum value for log dual variables (prevents numerical issues).
+      per_dim_constraining: If True, apply KL constraints per action dimension.
+      action_penalization: If True, penalize actions outside [-1, 1].
+      actor_optimizer: Optimizer builder for actor parameters.
+      dual_optimizer: Optimizer builder for dual variables.
+      gradient_clip: Maximum gradient norm for clipping. 0 disables clipping.
+    """
+    self.num_samples = num_samples
+    self.epsilon = epsilon
+    self.epsilon_mean = epsilon_mean
+    self.epsilon_std = epsilon_std
+    self.initial_log_temperature = initial_log_temperature
+    self.initial_log_alpha_mean = initial_log_alpha_mean
+    self.initial_log_alpha_std = initial_log_alpha_std
+    self.min_log_dual = torch.as_tensor(min_log_dual, dtype=torch.float32)
+    self.action_penalization = action_penalization
+    self.epsilon_penalty = epsilon_penalty
+    self.per_dim_constraining = per_dim_constraining
+    self.actor_optimizer_builder = actor_optimizer or (
+      lambda params: torch.optim.Adam(params, lr=3e-4)
+    )
+    self.dual_optimizer_builder = dual_optimizer or (
+      lambda params: torch.optim.Adam(params, lr=1e-2)
+    )
+    self.gradient_clip = gradient_clip
 
-        # Dual variables.
-        self.dual_variables = []
-        self.log_temperature = torch.nn.Parameter(torch.as_tensor(
-            [self.initial_log_temperature], dtype=torch.float32))
-        self.dual_variables.append(self.log_temperature)
-        shape = [action_space.shape[0]] if self.per_dim_constraining else [1]
-        self.log_alpha_mean = torch.nn.Parameter(torch.full(
-            shape, self.initial_log_alpha_mean, dtype=torch.float32))
-        self.dual_variables.append(self.log_alpha_mean)
-        self.log_alpha_std = torch.nn.Parameter(torch.full(
-            shape, self.initial_log_alpha_std, dtype=torch.float32))
-        self.dual_variables.append(self.log_alpha_std)
-        if self.action_penalization:
-            self.log_penalty_temperature = torch.nn.Parameter(torch.as_tensor(
-                [self.initial_log_temperature], dtype=torch.float32))
-            self.dual_variables.append(self.log_penalty_temperature)
-        self.dual_optimizer = self.dual_optimizer(self.dual_variables)
+  def initialize(self, model: torch.nn.Module, action_space: T.Any) -> None:
+    """Initialize the updater with model and action space.
+    
+    Args:
+      model: Model containing actor, target_actor, and target_critic.
+      action_space: Gym action space (used to determine action dimensionality).
+    """
+    self.model = model
+    self.actor_variables = models.trainable_variables(self.model.actor)
+    self.actor_optimizer = self.actor_optimizer_builder(self.actor_variables)
 
-    def __call__(self, observations):
-        def parametric_kl_and_dual_losses(kl, alpha, epsilon):
-            kl_mean = kl.mean(dim=0)
-            kl_loss = (alpha.detach() * kl_mean).sum()
-            alpha_loss = (alpha * (epsilon - kl_mean.detach())).sum()
-            return kl_loss, alpha_loss
+    # Initialize dual variables (Lagrange multipliers).
+    self.dual_variables: list[torch.nn.Parameter] = []
+    self.log_temperature = torch.nn.Parameter(
+      torch.as_tensor([self.initial_log_temperature], dtype=torch.float32)
+    )
+    self.dual_variables.append(self.log_temperature)
+    shape = [action_space.shape[0]] if self.per_dim_constraining else [1]
+    self.log_alpha_mean = torch.nn.Parameter(
+      torch.full(shape, self.initial_log_alpha_mean, dtype=torch.float32)
+    )
+    self.dual_variables.append(self.log_alpha_mean)
+    self.log_alpha_std = torch.nn.Parameter(
+      torch.full(shape, self.initial_log_alpha_std, dtype=torch.float32)
+    )
+    self.dual_variables.append(self.log_alpha_std)
+    if self.action_penalization:
+      self.log_penalty_temperature = torch.nn.Parameter(
+        torch.as_tensor([self.initial_log_temperature], dtype=torch.float32)
+      )
+      self.dual_variables.append(self.log_penalty_temperature)
+    self.dual_optimizer = self.dual_optimizer_builder(self.dual_variables)
 
-        def weights_and_temperature_loss(q_values, epsilon, temperature):
-            tempered_q_values = q_values.detach() / temperature
-            weights = torch.nn.functional.softmax(tempered_q_values, dim=0)
-            weights = weights.detach()
+  def __call__(self, observations: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Perform an MPO update using EM-style optimization.
+    
+    Args:
+      observations: State observations, shape [batch_size, obs_dim].
+      
+    Returns:
+      Dictionary containing policy losses, KL losses, dual losses, and dual variables.
+    """
 
-            # Temperature loss (dual of the E-step).
-            q_log_sum_exp = torch.logsumexp(tempered_q_values, dim=0)
-            num_actions = torch.as_tensor(
-                q_values.shape[0], dtype=torch.float32)
-            log_num_actions = torch.log(num_actions)
-            loss = epsilon + (q_log_sum_exp).mean() - log_num_actions
-            loss = temperature * loss
+    def parametric_kl_and_dual_losses(
+      kl: torch.Tensor,
+      alpha: torch.Tensor,
+      epsilon: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+      """Compute KL penalty and dual variable loss."""
+      kl_mean = kl.mean(dim=0)
+      kl_loss = (alpha.detach() * kl_mean).sum()
+      alpha_loss = (alpha * (epsilon - kl_mean.detach())).sum()
+      return kl_loss, alpha_loss
 
-            return weights, loss
+    def weights_and_temperature_loss(
+      q_values: torch.Tensor,
+      epsilon: float,
+      temperature: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+      """Compute softmax weights and temperature loss (E-step)."""
+      tempered_q_values = q_values.detach() / temperature
+      weights = torch.nn.functional.softmax(tempered_q_values, dim=0)
+      weights = weights.detach()
 
-        # Use independent normals to satisfy KL constraints per-dimension.
-        def independent_normals(distribution_1, distribution_2=None):
-            distribution_2 = distribution_2 or distribution_1
-            return torch.distributions.independent.Independent(
-                torch.distributions.normal.Normal(
-                    distribution_1.mean, distribution_2.stddev), -1)
+      # Temperature loss (dual of the E-step).
+      q_log_sum_exp = torch.logsumexp(tempered_q_values, dim=0)
+      num_actions = torch.as_tensor(q_values.shape[0], dtype=torch.float32)
+      log_num_actions = torch.log(num_actions)
+      loss = epsilon + (q_log_sum_exp).mean() - log_num_actions
+      loss = temperature * loss
 
-        with torch.no_grad():
-            self.log_temperature.data.copy_(
-                torch.maximum(self.min_log_dual, self.log_temperature))
-            self.log_alpha_mean.data.copy_(
-                torch.maximum(self.min_log_dual, self.log_alpha_mean))
-            self.log_alpha_std.data.copy_(
-                torch.maximum(self.min_log_dual, self.log_alpha_std))
-            if self.action_penalization:
-                self.log_penalty_temperature.data.copy_(torch.maximum(
-                    self.min_log_dual, self.log_penalty_temperature))
+      return weights, loss
 
-            target_distributions = self.model.target_actor(observations)
-            actions = target_distributions.sample((self.num_samples,))
+    def independent_normals(
+      distribution_1: T.Any,
+      distribution_2: T.Any | None = None,
+    ) -> T.Any:
+      """Create independent normal distribution from base distributions."""
+      distribution_2 = distribution_2 or distribution_1
+      return torch.distributions.independent.Independent(
+        torch.distributions.normal.Normal(distribution_1.mean, distribution_2.stddev), -1
+      )
 
-            tiled_observations = updaters.tile(observations, self.num_samples)
-            flat_observations = updaters.merge_first_two_dims(
-                tiled_observations)
-            flat_actions = updaters.merge_first_two_dims(actions)
-            values = self.model.target_critic(flat_observations, flat_actions)
-            values = values.view(self.num_samples, -1)
+    # Clamp dual variables to prevent numerical issues.
+    with torch.no_grad():
+      self.log_temperature.data.copy_(
+        torch.maximum(self.min_log_dual, self.log_temperature)
+      )
+      self.log_alpha_mean.data.copy_(torch.maximum(self.min_log_dual, self.log_alpha_mean))
+      self.log_alpha_std.data.copy_(torch.maximum(self.min_log_dual, self.log_alpha_std))
+      if self.action_penalization:
+        self.log_penalty_temperature.data.copy_(
+          torch.maximum(self.min_log_dual, self.log_penalty_temperature)
+        )
 
-            assert isinstance(
-                target_distributions, torch.distributions.normal.Normal)
-            target_distributions = independent_normals(target_distributions)
+      # Sample actions from target policy and evaluate with target critic.
+      target_distributions = self.model.target_actor(observations)
+      actions = target_distributions.sample((self.num_samples,))  # [num_samples, batch, act_dim]
 
-        self.actor_optimizer.zero_grad()
-        self.dual_optimizer.zero_grad()
+      tiled_observations = updaters.tile(observations, self.num_samples)
+      flat_observations = updaters.merge_first_two_dims(tiled_observations)
+      flat_actions = updaters.merge_first_two_dims(actions)
+      values = self.model.target_critic(flat_observations, flat_actions)  # [num_samples * batch]
+      values = values.view(self.num_samples, -1)  # [num_samples, batch]
 
-        distributions = self.model.actor(observations)
-        distributions = independent_normals(distributions)
+      assert isinstance(target_distributions, torch.distributions.normal.Normal)
+      target_distributions = independent_normals(target_distributions)
 
-        temperature = torch.nn.functional.softplus(
-            self.log_temperature) + FLOAT_EPSILON
-        alpha_mean = torch.nn.functional.softplus(
-            self.log_alpha_mean) + FLOAT_EPSILON
-        alpha_std = torch.nn.functional.softplus(
-            self.log_alpha_std) + FLOAT_EPSILON
-        weights, temperature_loss = weights_and_temperature_loss(
-            values, self.epsilon, temperature)
+    self.actor_optimizer.zero_grad()
+    self.dual_optimizer.zero_grad()
 
-        # Action penalization is quadratic beyond [-1, 1].
-        if self.action_penalization:
-            penalty_temperature = torch.nn.functional.softplus(
-                self.log_penalty_temperature) + FLOAT_EPSILON
-            diff_bounds = actions - torch.clamp(actions, -1, 1)
-            action_bound_costs = -torch.norm(diff_bounds, dim=-1)
-            penalty_weights, penalty_temperature_loss = \
-                weights_and_temperature_loss(
-                    action_bound_costs,
-                    self.epsilon_penalty, penalty_temperature)
-            weights += penalty_weights
-            temperature_loss += penalty_temperature_loss
+    distributions = self.model.actor(observations)
+    distributions = independent_normals(distributions)
 
-        # Decompose the policy into fixed-mean and fixed-std distributions.
-        fixed_std_distribution = independent_normals(
-            distributions.base_dist, target_distributions.base_dist)
-        fixed_mean_distribution = independent_normals(
-            target_distributions.base_dist, distributions.base_dist)
+    temperature = torch.nn.functional.softplus(self.log_temperature) + FLOAT_EPSILON
+    alpha_mean = torch.nn.functional.softplus(self.log_alpha_mean) + FLOAT_EPSILON
+    alpha_std = torch.nn.functional.softplus(self.log_alpha_std) + FLOAT_EPSILON
+    weights, temperature_loss = weights_and_temperature_loss(values, self.epsilon, temperature)
 
-        # Compute the decomposed policy losses.
-        policy_mean_losses = (fixed_std_distribution.base_dist.log_prob(
-            actions).sum(dim=-1) * weights).sum(dim=0)
-        policy_mean_loss = -(policy_mean_losses).mean()
-        policy_std_losses = (fixed_mean_distribution.base_dist.log_prob(
-            actions).sum(dim=-1) * weights).sum(dim=0)
-        policy_std_loss = -policy_std_losses.mean()
+    # Action penalization is quadratic beyond [-1, 1].
+    if self.action_penalization:
+      penalty_temperature = (
+        torch.nn.functional.softplus(self.log_penalty_temperature) + FLOAT_EPSILON
+      )
+      diff_bounds = actions - torch.clamp(actions, -1, 1)
+      action_bound_costs = -torch.norm(diff_bounds, dim=-1)  # [num_samples, batch]
+      penalty_weights, penalty_temperature_loss = weights_and_temperature_loss(
+        action_bound_costs, self.epsilon_penalty, penalty_temperature
+      )
+      weights += penalty_weights
+      temperature_loss += penalty_temperature_loss
 
-        # Compute the decomposed KL between the target and online policies.
-        if self.per_dim_constraining:
-            kl_mean = torch.distributions.kl.kl_divergence(
-                target_distributions.base_dist,
-                fixed_std_distribution.base_dist)
-            kl_std = torch.distributions.kl.kl_divergence(
-                target_distributions.base_dist,
-                fixed_mean_distribution.base_dist)
-        else:
-            kl_mean = torch.distributions.kl.kl_divergence(
-                target_distributions, fixed_std_distribution)
-            kl_std = torch.distributions.kl.kl_divergence(
-                target_distributions, fixed_mean_distribution)
+    # Decompose the policy into fixed-mean and fixed-std distributions.
+    fixed_std_distribution = independent_normals(
+      distributions.base_dist, target_distributions.base_dist
+    )
+    fixed_mean_distribution = independent_normals(
+      target_distributions.base_dist, distributions.base_dist
+    )
 
-        # Compute the alpha-weighted KL-penalty and dual losses.
-        kl_mean_loss, alpha_mean_loss = parametric_kl_and_dual_losses(
-            kl_mean, alpha_mean, self.epsilon_mean)
-        kl_std_loss, alpha_std_loss = parametric_kl_and_dual_losses(
-            kl_std, alpha_std, self.epsilon_std)
+    # Compute the decomposed policy losses (M-step).
+    policy_mean_losses = (
+      fixed_std_distribution.base_dist.log_prob(actions).sum(dim=-1) * weights
+    ).sum(dim=0)
+    policy_mean_loss = -(policy_mean_losses).mean()
+    policy_std_losses = (
+      fixed_mean_distribution.base_dist.log_prob(actions).sum(dim=-1) * weights
+    ).sum(dim=0)
+    policy_std_loss = -policy_std_losses.mean()
 
-        # Combine losses.
-        policy_loss = policy_mean_loss + policy_std_loss
-        kl_loss = kl_mean_loss + kl_std_loss
-        dual_loss = alpha_mean_loss + alpha_std_loss + temperature_loss
-        loss = policy_loss + kl_loss + dual_loss
+    # Compute the decomposed KL between the target and online policies.
+    if self.per_dim_constraining:
+      kl_mean = torch.distributions.kl.kl_divergence(
+        target_distributions.base_dist, fixed_std_distribution.base_dist
+      )
+      kl_std = torch.distributions.kl.kl_divergence(
+        target_distributions.base_dist, fixed_mean_distribution.base_dist
+      )
+    else:
+      kl_mean = torch.distributions.kl.kl_divergence(target_distributions, fixed_std_distribution)
+      kl_std = torch.distributions.kl.kl_divergence(
+        target_distributions, fixed_mean_distribution
+      )
 
-        loss.backward()
-        if self.gradient_clip > 0:
-            torch.nn.utils.clip_grad_norm_(
-                self.actor_variables, self.gradient_clip)
-            torch.nn.utils.clip_grad_norm_(
-                self.dual_variables, self.gradient_clip)
-        self.actor_optimizer.step()
-        self.dual_optimizer.step()
+    # Compute the alpha-weighted KL-penalty and dual losses.
+    kl_mean_loss, alpha_mean_loss = parametric_kl_and_dual_losses(
+      kl_mean, alpha_mean, self.epsilon_mean
+    )
+    kl_std_loss, alpha_std_loss = parametric_kl_and_dual_losses(
+      kl_std, alpha_std, self.epsilon_std
+    )
 
-        dual_variables = dict(
-            temperature=temperature.detach(), alpha_mean=alpha_mean.detach(),
-            alpha_std=alpha_std.detach())
-        if self.action_penalization:
-            dual_variables['penalty_temperature'] = \
-                penalty_temperature.detach()
+    # Combine losses.
+    policy_loss = policy_mean_loss + policy_std_loss
+    kl_loss = kl_mean_loss + kl_std_loss
+    dual_loss = alpha_mean_loss + alpha_std_loss + temperature_loss
+    loss = policy_loss + kl_loss + dual_loss
 
-        return dict(
-            policy_mean_loss=policy_mean_loss.detach(),
-            policy_std_loss=policy_std_loss.detach(),
-            kl_mean_loss=kl_mean_loss.detach(),
-            kl_std_loss=kl_std_loss.detach(),
-            alpha_mean_loss=alpha_mean_loss.detach(),
-            alpha_std_loss=alpha_std_loss.detach(),
-            temperature_loss=temperature_loss.detach(),
-            **dual_variables)
+    loss.backward()
+    if self.gradient_clip > 0:
+      torch.nn.utils.clip_grad_norm_(self.actor_variables, self.gradient_clip)
+      torch.nn.utils.clip_grad_norm_(self.dual_variables, self.gradient_clip)
+    self.actor_optimizer.step()
+    self.dual_optimizer.step()
+
+    dual_variables = dict(
+      temperature=temperature.detach(),
+      alpha_mean=alpha_mean.detach(),
+      alpha_std=alpha_std.detach(),
+    )
+    if self.action_penalization:
+      dual_variables['penalty_temperature'] = penalty_temperature.detach()
+
+    return dict(
+      policy_mean_loss=policy_mean_loss.detach(),
+      policy_std_loss=policy_std_loss.detach(),
+      kl_mean_loss=kl_mean_loss.detach(),
+      kl_std_loss=kl_std_loss.detach(),
+      alpha_mean_loss=alpha_mean_loss.detach(),
+      alpha_std_loss=alpha_std_loss.detach(),
+      temperature_loss=temperature_loss.detach(),
+      **dual_variables,
+    )

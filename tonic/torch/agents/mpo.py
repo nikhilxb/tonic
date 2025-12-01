@@ -1,7 +1,7 @@
 import torch
 
-from tonic import logger, replays  # noqa
-from tonic.torch import agents, models, normalizers, updaters
+from tonic import logger
+from tonic.torch import agents, models, replays, updaters
 
 
 def default_model():
@@ -14,7 +14,7 @@ def default_model():
             encoder=models.ObservationActionEncoder(),
             torso=models.MLP((256, 256), torch.nn.ReLU),
             head=models.ValueHead()),
-        observation_normalizer=normalizers.MeanStd())
+        observation_normalizer=models.MeanStdNormalizer())
 
 
 class MPO(agents.Agent):
@@ -27,7 +27,7 @@ class MPO(agents.Agent):
         self, model=None, replay=None, actor_updater=None, critic_updater=None
     ):
         self.model = model or default_model()
-        self.replay = replay or replays.Buffer(return_steps=5)
+        self.replay = replay or replays.OffPolicyBuffer(return_steps=5)
         self.actor_updater = actor_updater or \
             updaters.MaximumAPosterioriPolicyOptimization()
         self.critic_updater = critic_updater or updaters.ExpectedSARSA()
@@ -55,7 +55,7 @@ class MPO(agents.Agent):
 
     def update(self, observations, rewards, resets, terminations, steps):
         # Store the last transitions in the replay.
-        self.replay.store(
+        self.replay.record(
             observations=self.last_observations, actions=self.last_actions,
             next_observations=observations, rewards=rewards, resets=resets,
             terminations=terminations)

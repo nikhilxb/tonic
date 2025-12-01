@@ -1,7 +1,7 @@
 import torch
 
-from tonic import explorations, logger, replays  # noqa
-from tonic.torch import agents, models, normalizers, updaters
+from tonic import logger
+from tonic.torch import agents, explorations, models, replays, updaters
 
 
 def default_model():
@@ -14,7 +14,7 @@ def default_model():
             encoder=models.ObservationActionEncoder(),
             torso=models.MLP((256, 256), torch.nn.ReLU),
             head=models.ValueHead()),
-        observation_normalizer=normalizers.MeanStd())
+        observation_normalizer=models.MeanStdNormalizer())
 
 
 class DDPG(agents.Agent):
@@ -27,7 +27,7 @@ class DDPG(agents.Agent):
         critic_updater=None
     ):
         self.model = model or default_model()
-        self.replay = replay or replays.Buffer()
+        self.replay = replay or replays.OffPolicyBuffer()
         self.exploration = exploration or explorations.NormalActionNoise()
         self.actor_updater = actor_updater or \
             updaters.DeterministicPolicyGradient()
@@ -58,7 +58,7 @@ class DDPG(agents.Agent):
 
     def update(self, observations, rewards, resets, terminations, steps):
         # Store the last transitions in the replay.
-        self.replay.store(
+        self.replay.record(
             observations=self.last_observations, actions=self.last_actions,
             next_observations=observations, rewards=rewards, resets=resets,
             terminations=terminations)
@@ -88,7 +88,7 @@ class DDPG(agents.Agent):
                 'discounts')
 
         # Update both the actor and the critic multiple times.
-        for batch in self.replay.get(*keys, steps=steps):
+        for batch in self.replay.get_batches(*keys, steps=steps):
             batch = {k: torch.as_tensor(v) for k, v in batch.items()}
             infos = self._update_actor_critic(**batch)
 

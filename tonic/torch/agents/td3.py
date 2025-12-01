@@ -1,7 +1,7 @@
 import torch
 
 from tonic import logger  # noqa
-from tonic.torch import agents, models, normalizers, updaters
+from tonic.torch import agents, models, updaters
 
 
 def default_model():
@@ -14,7 +14,7 @@ def default_model():
             encoder=models.ObservationActionEncoder(),
             torso=models.MLP((256, 256), torch.nn.ReLU),
             head=models.ValueHead()),
-        observation_normalizer=normalizers.MeanStd())
+        observation_normalizer=models.MeanStdNormalizer())
 
 
 class TD3(agents.DDPG):

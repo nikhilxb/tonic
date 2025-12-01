@@ -36,7 +36,7 @@ class TRPO(agents.A2C):
 
     def update(self, observations, rewards, resets, terminations, steps):
         # Store the last transitions in the replay.
-        self.replay.store(
+        self.replay.record(
             observations=self.last_observations, actions=self.last_actions,
             next_observations=observations, rewards=rewards, resets=resets,
             terminations=terminations, log_probs=self.last_log_probs,
@@ -82,7 +82,7 @@ class TRPO(agents.A2C):
             logger.store('actor/' + k, v.numpy())
 
         critic_iterations = 0
-        for batch in self.replay.get('observations', 'returns'):
+        for batch in self.replay.get_batches('observations', 'returns'):
             batch = {k: torch.as_tensor(v) for k, v in batch.items()}
             infos = self.critic_updater(**batch)
             critic_iterations += 1
@@ -95,3 +95,6 @@ class TRPO(agents.A2C):
             self.model.observation_normalizer.update()
         if self.model.return_normalizer:
             self.model.return_normalizer.update()
+
+        # Reset the replay.
+        self.replay.reset()

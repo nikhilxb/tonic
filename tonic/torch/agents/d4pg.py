@@ -1,7 +1,5 @@
 import torch
-
-from tonic import replays  # noqa
-from tonic.torch import agents, models, normalizers, updaters
+from tonic.torch import agents, models, replays, updaters
 
 
 def default_model():
@@ -15,7 +13,7 @@ def default_model():
             torso=models.MLP((256, 256), torch.nn.ReLU),
             # These values are for the control suite with 0.99 discount.
             head=models.DistributionalValueHead(-150., 150., 51)),
-        observation_normalizer=normalizers.MeanStd())
+        observation_normalizer=models.MeanStdNormalizer())
 
 
 class D4PG(agents.DDPG):
@@ -28,7 +26,7 @@ class D4PG(agents.DDPG):
         critic_updater=None
     ):
         model = model or default_model()
-        replay = replay or replays.Buffer(return_steps=5)
+        replay = replay or replays.OffPolicyBuffer(return_steps=5)
         actor_updater = actor_updater or \
             updaters.DistributionalDeterministicPolicyGradient()
         critic_updater = critic_updater or \
