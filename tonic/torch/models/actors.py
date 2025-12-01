@@ -4,7 +4,7 @@ import torch
 import gym.spaces
 import numpy as np
 
-from . import normalizers
+from . import normalizers, utils
 
 
 FLOAT_EPSILON = 1e-8
@@ -248,12 +248,12 @@ class DeterministicPolicyHead(torch.nn.Module):
     """Initialize the action layer.
     
     Args:
-      input_size: Dimension of input features.
+      input_size: Input features dimension.
       action_space: `Box` or `Dict` action space.
     """
+    self.action_space = action_space
     if isinstance(action_space, gym.spaces.Dict):
-      raise NotImplementedError('Dict action spaces not yet supported for Deterministic policies')
-    assert action_space.shape is not None
+      action_space = utils.pack_space(action_space)
     action_size = int(np.prod(action_space.shape))
     self.action_layer = torch.nn.Sequential(
       torch.nn.Linear(input_size, action_size, bias=self.bias),
@@ -262,16 +262,19 @@ class DeterministicPolicyHead(torch.nn.Module):
     if self.fn:
       self.action_layer.apply(self.fn)
 
-  def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+  def forward(self, inputs: torch.Tensor) -> torch.Tensor | dict[str, torch.Tensor]:
     """Compute deterministic action.
     
     Args:
       inputs: Input features [batch_size, input_size].
       
     Returns:
-      Deterministic actions [batch_size, action_size].
+      Actions tensors or dict of tensors, [batch_size, action_size].
     """
-    return self.action_layer(inputs)  # [batch_size, action_size]
+    actions = self.action_layer(inputs)  # [batch_size, action_size]
+    # Reshape box actions. Unpack and reshape dict actions.
+    actions = utils.unpack_tensors(self.action_space, actions)
+    return actions
 
 
 # ==================================================================================================

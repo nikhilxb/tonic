@@ -106,7 +106,7 @@ class BoxObservationActionEncoder(torch.nn.Module):
 
 
 class DictObservationEncoder(torch.nn.Module):
-  """Encoder for `Dict` observations: normalize, flatten."""
+  """Encoder for `Dict` observations: normalize, pack."""
 
   def __init__(self, observation_prefix: str = ""):
     """
@@ -129,7 +129,7 @@ class DictObservationEncoder(torch.nn.Module):
       observation_normalizer: `Dict` observation normalizer, optional.
       
     Returns:
-      Flattened observation vector size.
+      Observation vector size.
     """
     assert isinstance(observation_space, gym.spaces.Dict)
     assert all(isinstance(o, gym.spaces.Box) for o in observation_space.spaces.values())
@@ -137,8 +137,8 @@ class DictObservationEncoder(torch.nn.Module):
     self.observation_space = gym.spaces.Dict({
       k: v for k, v in observation_space.spaces.items() if k.startswith(self.observation_prefix)
     })
-    observation_space_flat = utils.pack_space(self.observation_space)
-    observation_size = observation_space_flat.shape[0]
+    observation_space_box = utils.pack_space(self.observation_space)
+    observation_size = observation_space_box.shape[0]
     return observation_size
 
   @T.overload
@@ -153,7 +153,7 @@ class DictObservationEncoder(torch.nn.Module):
       inputs: `Dict` observations `{key: [batch_size, ...]}`.
       
     Returns:
-      Flattened observations `[batch_size, observation_size]`.
+      Normalized observations `[batch_size, observation_size]`.
     """
     observations = T.cast(dict[str, torch.Tensor], inputs[0])
     observations = {
@@ -161,12 +161,12 @@ class DictObservationEncoder(torch.nn.Module):
     }
     if self.observation_normalizer:
       observations = self.observation_normalizer(observations)  # {key: [batch, ...]}
-    observations_flat = utils.pack_tensors(self.observation_space, observations)  # [batch, obs]
-    return observations_flat
+    observations_box = utils.pack_tensors(self.observation_space, observations)  # [batch, obs]
+    return observations_box
 
 
 class DictObservationActionEncoder(torch.nn.Module):
-  """Encoder for `Dict` observations and actions: normalize, flatten, concatenate."""
+  """Encoder for `Dict` observations and actions: normalize, pack, concatenate."""
 
   def __init__(self, observation_prefix: str = ""):
     """
@@ -200,10 +200,10 @@ class DictObservationActionEncoder(torch.nn.Module):
       k: v for k, v in observation_space.spaces.items() if k.startswith(self.observation_prefix)
     })
     self.action_space = action_space
-    observation_space_flat = utils.pack_space(self.observation_space)
-    action_space_flat = utils.pack_space(self.action_space)
-    observation_size = observation_space_flat.shape[0]
-    action_size = action_space_flat.shape[0]
+    observation_space_box = utils.pack_space(self.observation_space)
+    action_space_box = utils.pack_space(self.action_space)
+    observation_size = observation_space_box.shape[0]
+    action_size = action_space_box.shape[0]
     return observation_size + action_size
 
   @T.overload
@@ -223,7 +223,7 @@ class DictObservationActionEncoder(torch.nn.Module):
       inputs: Dict observations `{key: [batch_size, ...]}` and actions `{key: [batch_size, ...]}`.
       
     Returns:
-      Concatenated tensor `[batch_size, observation_size + action_size]`.
+      Normalized concatenated tensor `[batch_size, observation_size + action_size]`.
     """
     observations, actions = T.cast(tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]], inputs)
     observations = {
@@ -231,6 +231,6 @@ class DictObservationActionEncoder(torch.nn.Module):
     }
     if self.observation_normalizer:
       observations = self.observation_normalizer(observations)  # {key: [batch, ...]}
-    observations_flat = utils.pack_tensors(self.observation_space, observations)  # [batch, obs]
-    actions_flat = utils.pack_tensors(self.action_space, actions)  # [batch, act]
-    return torch.cat([observations_flat, actions_flat], dim=-1)  # [batch, obs + act]
+    observations_box = utils.pack_tensors(self.observation_space, observations)  # [batch, obs]
+    actions_box = utils.pack_tensors(self.action_space, actions)  # [batch, act]
+    return torch.cat([observations_box, actions_box], dim=-1)  # [batch, obs + act]
