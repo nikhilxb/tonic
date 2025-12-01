@@ -25,7 +25,7 @@ class Agent(abc.ABC):
   def step(
     self,
     observations: Observation,
-    steps: int,
+    step: int,
   ) -> Action:
     """Returns actions during training."""
     pass
@@ -36,7 +36,7 @@ class Agent(abc.ABC):
     rewards: torch.Tensor,
     resets: torch.Tensor,
     terminations: torch.Tensor,
-    steps: int,
+    step: int,
   ) -> None:
     """Informs the agent of the latest transitions during training."""
     pass
@@ -45,7 +45,7 @@ class Agent(abc.ABC):
   def test_step(
     self,
     observations: Observation,
-    steps: int,
+    step: int,
   ) -> Action:
     """Returns actions during testing."""
     pass
@@ -56,7 +56,7 @@ class Agent(abc.ABC):
     rewards: torch.Tensor,
     resets: torch.Tensor,
     terminations: torch.Tensor,
-    steps: int,
+    step: int,
   ) -> None:
     """Informs the agent of the latest transitions during testing."""
     pass

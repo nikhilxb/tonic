@@ -5,11 +5,11 @@ from tonic.torch import agents, models, replays, updaters
 def default_model():
     return models.ActorCriticWithTargets(
         actor=models.Actor(
-            encoder=models.ObservationEncoder(),
+            encoder=models.BoxObservationEncoder(),
             torso=models.MLP((256, 256), torch.nn.ReLU),
             head=models.DeterministicPolicyHead()),
         critic=models.Critic(
-            encoder=models.ObservationActionEncoder(),
+            encoder=models.BoxObservationActionEncoder(),
             torso=models.MLP((256, 256), torch.nn.ReLU),
             # These values are for the control suite with 0.99 discount.
             head=models.DistributionalValueHead(-150., 150., 51)),

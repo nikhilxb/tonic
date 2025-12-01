@@ -46,7 +46,7 @@ class MeanStdNormalizer(torch.nn.Module):
     Args:
       observation_space: `Box` observation space.
     """
-    assert observation_space.shape is not None
+    assert isinstance(observation_space, gym.spaces.Box)
     shape = observation_space.shape
     mean = self.mean.broadcast_to(shape).clone()
     self.mean = mean
@@ -145,7 +145,7 @@ class NegPosNormalizer(torch.nn.Module):
     Args:
       observation_space: `Box` observation space.
     """
-    assert observation_space.shape is not None
+    assert isinstance(observation_space, gym.spaces.Box)
     shape = observation_space.shape
     min = self.min.broadcast_to(shape).clone()
     mid = self.mid.broadcast_to(shape).clone()
@@ -208,7 +208,7 @@ class NegPosNormalizer(torch.nn.Module):
     self.max[:] = torch.maximum(self.max, self._new_max)
 
 
-Normalizer = MeanStdNormalizer | NegPosNormalizer
+BoxNormalizer = MeanStdNormalizer | NegPosNormalizer
 
 
 def meanstd_builder(key: str) -> MeanStdNormalizer:
@@ -219,13 +219,13 @@ def posneg_builder(key: str) -> NegPosNormalizer:
   return NegPosNormalizer()
 
 
-class UnflatNormalizer(torch.nn.Module):
+class DictNormalizer(torch.nn.Module):
   """Normalizer wrapper for `Dict` observations."""
 
   def __init__(
     self,
-    normalizer_builder: T.Mapping[str, Normalizer | None] |
-    T.Callable[[str], Normalizer | None] = posneg_builder,
+    normalizer_builder: T.Mapping[str, BoxNormalizer | None] |
+    T.Callable[[str], BoxNormalizer | None] = posneg_builder,
   ):
     """
     Args:
@@ -233,7 +233,7 @@ class UnflatNormalizer(torch.nn.Module):
     """
     super().__init__()
     self.normalizer_builder = normalizer_builder
-    self.normalizers: dict[str, Normalizer] = torch.nn.ModuleDict()  # type: ignore
+    self.normalizers: dict[str, BoxNormalizer] = torch.nn.ModuleDict()  # type: ignore
 
   def initialize(self, observation_space: gym.spaces.Dict) -> None:
     """
@@ -298,7 +298,7 @@ class UnflatNormalizer(torch.nn.Module):
       normalizer.update()
 
 
-ObservationNormalizer = Normalizer | UnflatNormalizer
+ObservationNormalizer = BoxNormalizer | DictNormalizer
 
 
 # ==================================================================================================

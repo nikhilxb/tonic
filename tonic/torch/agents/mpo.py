@@ -7,11 +7,11 @@ from tonic.torch import agents, models, replays, updaters
 def default_model():
     return models.ActorCriticWithTargets(
         actor=models.Actor(
-            encoder=models.ObservationEncoder(),
+            encoder=models.BoxObservationEncoder(),
             torso=models.MLP((256, 256), torch.nn.ReLU),
             head=models.GaussianPolicyHead()),
         critic=models.Critic(
-            encoder=models.ObservationActionEncoder(),
+            encoder=models.BoxObservationActionEncoder(),
             torso=models.MLP((256, 256), torch.nn.ReLU),
             head=models.ValueHead()),
         observation_normalizer=models.MeanStdNormalizer())

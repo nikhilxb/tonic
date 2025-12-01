@@ -23,8 +23,8 @@ class ActorOnly(torch.nn.Module):
 
   def __init__(
     self,
-    actor: actors.ActorLike | actors.UnflatActorLike,
-    observation_normalizer: normalizers.Normalizer | normalizers.UnflatNormalizer | None = None,
+    actor: actors.ActorLike,
+    observation_normalizer: normalizers.ObservationNormalizer | None = None,
   ):
     super().__init__()
     self.actor = actor
@@ -38,9 +38,9 @@ class ActorOnly(torch.nn.Module):
     if self.observation_normalizer:
       self.observation_normalizer.initialize(observation_space)  # type: ignore
     self.actor.initialize(
-      observation_space,  # type: ignore
-      action_space,  # type: ignore
-      self.observation_normalizer,  # type: ignore
+      observation_space,
+      action_space,
+      self.observation_normalizer,
     )
 
 
@@ -49,9 +49,9 @@ class ActorCritic(torch.nn.Module):
 
   def __init__(
     self,
-    actor: actors.ActorLike | actors.UnflatActorLike,
-    critic: critics.CriticLike | critics.UnflatCriticLike,
-    observation_normalizer: normalizers.Normalizer | normalizers.UnflatNormalizer | None = None,
+    actor: actors.ActorLike,
+    critic: critics.CriticLike,
+    observation_normalizer: normalizers.ObservationNormalizer | None = None,
     return_normalizer: normalizers.ReturnNormalizer | None = None,
   ):
     super().__init__()
@@ -68,14 +68,14 @@ class ActorCritic(torch.nn.Module):
     if self.observation_normalizer:
       self.observation_normalizer.initialize(observation_space)  # type: ignore
     self.actor.initialize(
-      observation_space,  # type: ignore
-      action_space,  # type: ignore
-      self.observation_normalizer,  # type: ignore
+      observation_space,
+      action_space,
+      self.observation_normalizer,
     )
     self.critic.initialize(
-      observation_space,  # type: ignore
-      action_space,  # type: ignore
-      self.observation_normalizer,  # type: ignore
+      observation_space,
+      action_space,
+      self.observation_normalizer,
       self.return_normalizer,
     )
 
@@ -85,9 +85,9 @@ class ActorCriticWithTargets(torch.nn.Module):
 
   def __init__(
     self,
-    actor: actors.ActorLike | actors.UnflatActorLike,
-    critic: critics.CriticLike | critics.UnflatCriticLike,
-    observation_normalizer: normalizers.Normalizer | normalizers.UnflatNormalizer | None = None,
+    actor: actors.ActorLike,
+    critic: critics.CriticLike,
+    observation_normalizer: normalizers.ObservationNormalizer | None = None,
     return_normalizer: normalizers.ReturnNormalizer | None = None,
     target_coeff: float = 0.005,
   ):
@@ -108,26 +108,27 @@ class ActorCriticWithTargets(torch.nn.Module):
     if self.observation_normalizer:
       self.observation_normalizer.initialize(observation_space)  # type: ignore
     self.actor.initialize(
-      observation_space,  # type: ignore
-      action_space,  # type: ignore
-      self.observation_normalizer,  # type: ignore
+      observation_space,
+      action_space,
+      self.observation_normalizer,
     )
     self.critic.initialize(
-      observation_space,  # type: ignore
-      action_space,  # type: ignore
-      self.observation_normalizer,  # type: ignore
+      observation_space,
+      action_space,
+      self.observation_normalizer,
       self.return_normalizer,
     )
     self.target_actor.initialize(
-      observation_space,  # type: ignore
-      action_space,  # type: ignore
-      self.observation_normalizer,  # type: ignore
+      observation_space,
+      action_space,
+      self.observation_normalizer,
     )
     self.target_critic.initialize(
-      observation_space,  # type: ignore
-      action_space,  # type: ignore
-      self.observation_normalizer,  # type: ignore
-      self.return_normalizer)
+      observation_space,
+      action_space,
+      self.observation_normalizer,
+      self.return_normalizer,
+    )
     self.online_variables = [
       *utils.trainable_variables(T.cast(torch.nn.Module, self.actor)),
       *utils.trainable_variables(T.cast(torch.nn.Module, self.critic)),
@@ -157,9 +158,9 @@ class ActorTwinCriticWithTargets(torch.nn.Module):
 
   def __init__(
     self,
-    actor: actors.ActorLike | actors.UnflatActorLike,
-    critic: critics.CriticLike | critics.UnflatCriticLike,
-    observation_normalizer: normalizers.Normalizer | normalizers.UnflatNormalizer | None = None,
+    actor: actors.ActorLike,
+    critic: critics.CriticLike,
+    observation_normalizer: normalizers.ObservationNormalizer | None = None,
     return_normalizer: normalizers.ReturnNormalizer | None = None,
     target_coeff: float = 0.005,
   ):
@@ -182,37 +183,37 @@ class ActorTwinCriticWithTargets(torch.nn.Module):
     if self.observation_normalizer:
       self.observation_normalizer.initialize(observation_space)  # type: ignore
     self.actor.initialize(
-      observation_space,  # type: ignore
-      action_space,  # type: ignore
-      self.observation_normalizer,  # type: ignore
+      observation_space,
+      action_space,
+      self.observation_normalizer,
     )
     self.critic_1.initialize(
-      observation_space,  # type: ignore
-      action_space,  # type: ignore
-      self.observation_normalizer,  # type: ignore
+      observation_space,
+      action_space,
+      self.observation_normalizer,
       self.return_normalizer,
     )
     self.critic_2.initialize(
-      observation_space,  # type: ignore
-      action_space,  # type: ignore
-      self.observation_normalizer,  # type: ignore
+      observation_space,
+      action_space,
+      self.observation_normalizer,
       self.return_normalizer,
     )
     self.target_actor.initialize(
-      observation_space,  # type: ignore
-      action_space,  # type: ignore
-      self.observation_normalizer,  # type: ignore
+      observation_space,
+      action_space,
+      self.observation_normalizer,
     )
     self.target_critic_1.initialize(
-      observation_space,  # type: ignore
-      action_space,  # type: ignore
-      self.observation_normalizer,  # type: ignore
+      observation_space,
+      action_space,
+      self.observation_normalizer,
       self.return_normalizer,
     )
     self.target_critic_2.initialize(
-      observation_space,  # type: ignore
-      action_space,  # type: ignore
-      self.observation_normalizer,  # type: ignore
+      observation_space,
+      action_space,
+      self.observation_normalizer,
       self.return_normalizer,
     )
     self.online_variables = [

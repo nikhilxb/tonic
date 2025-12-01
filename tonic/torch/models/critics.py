@@ -159,16 +159,16 @@ class DistributionalValueHead(torch.nn.Module):
 class CriticEncoder(T.Protocol):
   def initialize(
     self,
-    observation_space: gym.spaces.Box,
-    action_space: gym.spaces.Box,
-    observation_normalizer: normalizers.Normalizer | None = None,
+    observation_space: gym.spaces.Box | gym.spaces.Dict,
+    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_normalizer: normalizers.ObservationNormalizer | None = None,
   ) -> int:
     ...
 
-  def forward(self, *inputs: torch.Tensor) -> T.Any:
+  def forward(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.Any:
      ...
 
-  def __call__(self, *inputs: torch.Tensor) -> T.Any:
+  def __call__(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.Any:
      ...
 
 
@@ -201,9 +201,9 @@ class CriticHead(T.Protocol):
 class CriticLike(T.Protocol):
   def initialize(
     self,
-    observation_space: gym.spaces.Box,
-    action_space: gym.spaces.Box,
-    observation_normalizer: normalizers.Normalizer | None = None,
+    observation_space: gym.spaces.Box | gym.spaces.Dict,
+    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_normalizer: normalizers.ObservationNormalizer | None = None,
     return_normalizer: normalizers.ReturnNormalizer | None = None,
   ) -> None:
     ...
@@ -211,7 +211,7 @@ class CriticLike(T.Protocol):
   def reset(self) -> None:
     ...
 
-  def forward(self, *inputs: torch.Tensor) -> T.Any:
+  def forward(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.Any:
     ...
 
   def __call__(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.Any:
@@ -219,7 +219,8 @@ class CriticLike(T.Protocol):
 
 
 class Critic(torch.nn.Module):
-  """Critic that uses `Box` observation and action spaces."""
+  """Critic that uses `Box` or `Dict` observation and action spaces."""
+  
   def __init__(
     self,
     encoder: CriticEncoder,
@@ -233,104 +234,11 @@ class Critic(torch.nn.Module):
 
   def initialize(
     self,
-    observation_space: gym.spaces.Box,
-    action_space: gym.spaces.Box,
-    observation_normalizer: normalizers.Normalizer | None = None,
+    observation_space: gym.spaces.Box | gym.spaces.Dict,
+    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_normalizer: normalizers.ObservationNormalizer | None = None,
     return_normalizer: normalizers.ReturnNormalizer | None = None,
-  ):
-    assert isinstance(observation_space, gym.spaces.Box)
-    assert isinstance(action_space, gym.spaces.Box)
-    assert len(observation_space.shape) == 1, 'Observation must be 1D.'
-    assert len(action_space.shape) == 1, 'Action must be 1D.'
-    
-    size = self.encoder.initialize(observation_space, action_space, observation_normalizer)
-    if self.torso is not None:
-      size = self.torso.initialize(size)
-    self.head.initialize(size, return_normalizer)
-
-  def reset(self):
-    pass
-
-  @T.overload
-  def forward(self, observations: torch.Tensor, /) -> T.Any:
-     ...
-  @T.overload
-  def forward(self, observations: torch.Tensor, actions: torch.Tensor, /) -> T.Any:
-     ...
-  @T.overload
-  def forward(self, *inputs: torch.Tensor) -> T.NoReturn:
-     ...
-  def forward(self, *inputs: torch.Tensor):
-    out = self.encoder(*inputs)
-    if self.torso is not None:
-      out = self.torso(out)
-    return self.head(out)
-
-
-# ==================================================================================================
-# Unflat Critic
-
-class UnflatCriticEncoder(T.Protocol):
-  def initialize(
-    self,
-    observation_space: gym.spaces.Dict,
-    action_space: gym.spaces.Dict,
-    observation_normalizer: normalizers.UnflatNormalizer | None = None,
-  ) -> int:
-    ...
-
-  def forward(self, *inputs: dict[str, torch.Tensor]) -> T.Any:
-    ...
-
-  def __call__(self, *inputs: dict[str, torch.Tensor]) -> T.Any:
-    ...
-
-
-class UnflatCriticLike(T.Protocol):
-  def initialize(
-    self,
-    observation_space: gym.spaces.Dict,
-    action_space: gym.spaces.Dict,
-    observation_normalizer: normalizers.UnflatNormalizer | None = None,
-    return_normalizer: normalizers.ReturnNormalizer | None = None,
-  ) -> None:
-    ...
-
-  def reset(self) -> None:
-    ...
-  
-  def forward(self, *inputs: dict[str, torch.Tensor]) -> T.Any:
-    ...
-
-  def __call__(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.Any:
-    ...
-
-
-class UnflatCritic(torch.nn.Module):
-  """Critic that uses `Dict` observation and action spaces."""
-  def __init__(
-    self,
-    encoder: UnflatCriticEncoder,
-    torso: CriticTorso | None,
-    head: CriticHead,
-  ):
-    super().__init__()
-    self.encoder = encoder
-    self.torso = torso
-    self.head = head
-
-  def initialize(
-    self,
-    observation_space: gym.spaces.Dict,
-    action_space: gym.spaces.Dict,
-    observation_normalizer: normalizers.UnflatNormalizer | None = None,
-    return_normalizer: normalizers.ReturnNormalizer | None = None,
-  ) -> None:
-    assert isinstance(observation_space, gym.spaces.Dict)
-    assert isinstance(action_space, gym.spaces.Dict)
-    assert all(isinstance(o, gym.spaces.Box) for o in observation_space.spaces.values())
-    assert all(isinstance(a, gym.spaces.Box) for a in action_space.spaces.values())
-    
+  ) -> None:    
     size = self.encoder.initialize(observation_space, action_space, observation_normalizer)
     if self.torso is not None:
       size = self.torso.initialize(size)
@@ -339,7 +247,7 @@ class UnflatCritic(torch.nn.Module):
   def reset(self) -> None:
     pass
 
-  def forward(self, *inputs: dict[str, torch.Tensor]):
+  def forward(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.Any:
     out = self.encoder(*inputs)
     if self.torso is not None:
       out = self.torso(out)

@@ -112,13 +112,17 @@ class DetachedScaleGaussianPolicyHead(torch.nn.Module):
     self.scale_max = scale_max
     self.distribution = distribution
 
-  def initialize(self, input_size: int, action_size: int) -> None:
+  def initialize(self, input_size: int, action_space: gym.spaces.Box | gym.spaces.Dict) -> None:
     """Initialize layers.
     
     Args:
       input_size: Dimension of input features.
-      action_size: Dimension of action space.
+      action_space: `Box` or `Dict` action space.
     """
+    if isinstance(action_space, gym.spaces.Dict):
+      raise NotImplementedError('Dict action spaces not yet supported for Gaussian policies')
+    assert action_space.shape is not None
+    action_size = int(np.prod(action_space.shape))
     self.loc_layer = torch.nn.Sequential(
       torch.nn.Linear(input_size, action_size),
       self.loc_activation(),
@@ -180,13 +184,17 @@ class GaussianPolicyHead(torch.nn.Module):
     self.scale_fn = scale_fn
     self.distribution = distribution
 
-  def initialize(self, input_size: int, action_size: int) -> None:
+  def initialize(self, input_size: int, action_space: gym.spaces.Box | gym.spaces.Dict) -> None:
     """Initialize layers.
     
     Args:
       input_size: Dimension of input features.
-      action_size: Dimension of action space.
+      action_space: `Box` or `Dict` action space.
     """
+    if isinstance(action_space, gym.spaces.Dict):
+      raise NotImplementedError('Dict action spaces not yet supported for Gaussian policies')
+    assert action_space.shape is not None
+    action_size = int(np.prod(action_space.shape))
     self.loc_layer = torch.nn.Sequential(
       torch.nn.Linear(input_size, action_size),
       self.loc_activation(),
@@ -236,13 +244,17 @@ class DeterministicPolicyHead(torch.nn.Module):
     self.bias = bias
     self.fn = fn
 
-  def initialize(self, input_size: int, action_size: int) -> None:
+  def initialize(self, input_size: int, action_space: gym.spaces.Box | gym.spaces.Dict) -> None:
     """Initialize the action layer.
     
     Args:
       input_size: Dimension of input features.
-      action_size: Dimension of action space.
+      action_space: `Box` or `Dict` action space.
     """
+    if isinstance(action_space, gym.spaces.Dict):
+      raise NotImplementedError('Dict action spaces not yet supported for Deterministic policies')
+    assert action_space.shape is not None
+    action_size = int(np.prod(action_space.shape))
     self.action_layer = torch.nn.Sequential(
       torch.nn.Linear(input_size, action_size, bias=self.bias),
       self.activation(),
@@ -268,16 +280,16 @@ class DeterministicPolicyHead(torch.nn.Module):
 class ActorEncoder(T.Protocol):
   def initialize(
     self,
-    observation_space: gym.spaces.Box,
-    action_space: gym.spaces.Box,
-    observation_normalizer: normalizers.Normalizer | None = None,
+    observation_space: gym.spaces.Box | gym.spaces.Dict,
+    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_normalizer: normalizers.ObservationNormalizer | None = None,
   ) -> int:
     ...
 
-  def forward(self, *inputs: torch.Tensor) -> T.Any:
+  def forward(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.Any:
     ...
 
-  def __call__(self, *inputs: torch.Tensor) -> T.Any:
+  def __call__(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.Any:
     ...
 
 
@@ -293,7 +305,7 @@ class ActorTorso(T.Protocol):
 
 
 class ActorHead(T.Protocol):
-  def initialize(self, input_size: int, action_size: int) -> None:
+  def initialize(self, input_size: int, action_space: gym.spaces.Box | gym.spaces.Dict) -> None:
     ...
 
   def forward(self, inputs: T.Any) -> T.Any:
@@ -306,16 +318,16 @@ class ActorHead(T.Protocol):
 class ActorLike(T.Protocol):
   def initialize(
     self,
-    observation_space: gym.spaces.Box,
-    action_space: gym.spaces.Box,
-    observation_normalizer: normalizers.Normalizer | None = None,
+    observation_space: gym.spaces.Box | gym.spaces.Dict,
+    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_normalizer: normalizers.ObservationNormalizer | None = None,
   ) -> None:
     ...
 
   def reset(self) -> None:
     ...
 
-  def forward(self, *inputs: torch.Tensor) -> T.Any:
+  def forward(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.Any:
     ...
 
   def __call__(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.Any:
@@ -323,7 +335,8 @@ class ActorLike(T.Protocol):
 
 
 class Actor(torch.nn.Module):
-  """Actor that uses `Box` observation and action spaces."""
+  """Actor that uses `Box` or `Dict` observation and action spaces."""
+  
   def __init__(
     self,
     encoder: ActorEncoder,
@@ -337,111 +350,19 @@ class Actor(torch.nn.Module):
 
   def initialize(
     self,
-    observation_space: gym.spaces.Box,
-    action_space: gym.spaces.Box,
-    observation_normalizer: normalizers.Normalizer | None = None,
-  ):
-    assert isinstance(observation_space, gym.spaces.Box)
-    assert isinstance(action_space, gym.spaces.Box)
-    assert len(observation_space.shape) == 1, 'Observation must be 1D.'
-    assert len(action_space.shape) == 1, 'Action must be 1D.'
-    
+    observation_space: gym.spaces.Box | gym.spaces.Dict,
+    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_normalizer: normalizers.ObservationNormalizer | None = None,
+  ) -> None:
     size = self.encoder.initialize(observation_space, action_space, observation_normalizer)
     if self.torso is not None:
       size = self.torso.initialize(size)
-    self.head.initialize(size, action_space.shape[0])
+    self.head.initialize(size, action_space)
 
-  def reset(self):
+  def reset(self) -> None:
     pass
   
-  @T.overload
-  def forward(self, observations: torch.Tensor, /) -> T.Any:
-     ...
-  @T.overload
-  def forward(self, *inputs: torch.Tensor) -> T.NoReturn:
-     ...
-  def forward(self, *inputs: torch.Tensor):
-    out = self.encoder(*inputs)
-    if self.torso is not None:
-      out = self.torso(out)
-    return self.head(out)
-
-
-# ==================================================================================================
-# Unflat Actor
-
-class UnflatActorEncoder(T.Protocol):
-  def initialize(
-    self,
-    observation_space: gym.spaces.Dict,
-    action_space: gym.spaces.Dict,
-    observation_normalizer: normalizers.UnflatNormalizer | None = None,
-  ) -> int:
-    ...
-
-  def forward(self, *inputs: dict[str, torch.Tensor]) -> T.Any:
-    ...
-
-  def __call__(self, *inputs: dict[str, torch.Tensor]) -> T.Any:
-    ...
-
-
-class UnflatActorLike(T.Protocol):
-  def initialize(
-    self,
-    observation_space: gym.spaces.Dict,
-    action_space: gym.spaces.Dict,
-    observation_normalizer: normalizers.UnflatNormalizer | None = None,
-  ) -> None:
-    ...
-
-  def reset(self) -> None:
-    ...
-
-  def forward(self, *inputs: dict[str, torch.Tensor]) -> T.Any:
-    ...
-
-  def __call__(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.Any:
-    ...
-
-
-class UnflatActor(torch.nn.Module):
-  """Actor that uses `Dict` observation and action spaces."""
-  def __init__(
-    self,
-    encoder: UnflatActorEncoder,
-    torso: ActorTorso | None,
-    head: ActorHead,
-  ):
-    super().__init__()
-    self.encoder = encoder
-    self.torso = torso
-    self.head = head
-
-  def initialize(
-    self,
-    observation_space: gym.spaces.Dict,
-    action_space: gym.spaces.Dict,
-    observation_normalizer: normalizers.UnflatNormalizer | None = None,
-  ) -> None:
-    assert isinstance(observation_space, gym.spaces.Dict)
-    assert isinstance(action_space, gym.spaces.Dict)
-    assert all(isinstance(o, gym.spaces.Box) for o in observation_space.spaces.values())
-    assert all(isinstance(a, gym.spaces.Box) for a in action_space.spaces.values())
-    
-    size = self.encoder.initialize(observation_space, action_space, observation_normalizer)
-    if self.torso is not None:
-      size = self.torso.initialize(size)
-    action_size = sum(
-      int(np.prod(space.shape)) if space.shape is not None else 1
-      for space in action_space.spaces.values()
-    )
-    self.head.initialize(size, action_size)
-
-  def reset(self) -> None:
-    pass
-
-  def forward(self, *inputs: dict[str, torch.Tensor]):
+  def forward(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.Any:
     out = self.encoder(*inputs)
     if self.torso is not None:
       out = self.torso(out)

@@ -5,22 +5,16 @@ import torch
 from . import utils
 
 
-class DefaultTypes(T.TypedDict, extra_items=torch.Tensor | dict[str, torch.Tensor]):
+class RecordValues(T.TypedDict, extra_items=torch.Tensor | dict[str, torch.Tensor]):
   observations: torch.Tensor | dict[str, torch.Tensor]
   actions: torch.Tensor | dict[str, torch.Tensor]
   rewards: torch.Tensor
   resets: torch.Tensor
   terminations: torch.Tensor
   next_observations: torch.Tensor | dict[str, torch.Tensor]
-  returns: torch.Tensor
-  values: torch.Tensor
-  next_values: torch.Tensor
-  advantages: torch.Tensor
 
 
-class DefaultTypesPartial(
-  T.TypedDict, total=False, extra_items=torch.Tensor | dict[str, torch.Tensor]
-):
+class BufferValues(T.TypedDict, extra_items=torch.Tensor | dict[str, torch.Tensor]):
   observations: torch.Tensor | dict[str, torch.Tensor]
   actions: torch.Tensor | dict[str, torch.Tensor]
   rewards: torch.Tensor
@@ -87,11 +81,11 @@ class OnPolicyBuffer(T.Generic[Keys]):
     """Check if buffer is full and ready for training.
     
     Returns:
-      True if buffer has collected max_size timesteps.
+      True if buffer has collected `max_size` timesteps.
     """
     return self.index >= self.max_size
 
-  def record(self, keyvals: DefaultTypesPartial) -> None:
+  def record(self, keyvals: RecordValues) -> None:
     """Record a single timestep of transitions from parallel environments.
     
     Args:
@@ -109,14 +103,14 @@ class OnPolicyBuffer(T.Generic[Keys]):
       
       for key, val in keyvals.items():
         if isinstance(val, dict):
-          # Unflat: create nested dict of buffers
+          # Unpacked: create nested dict of buffers
           self.buffers[key] = {
             k: torch.empty((self.max_size,) + v.shape, dtype=v.dtype, device=v.device)
             for k, v in val.items()
           }
         else:
-          # Flat: create single buffer
-          shape = (self.max_size,) + val.shape  # [num_steps, num_envs, ...]
+          # Packed: create single buffer
+          shape = (self.max_size,) + val.shape  # [max_size, num_envs, ...]
           self.buffers[key] = torch.empty(shape, dtype=val.dtype, device=val.device)
     
     # Store current timestep data.
@@ -131,7 +125,7 @@ class OnPolicyBuffer(T.Generic[Keys]):
   def get_full(self, *keys: Keys) -> dict[Keys, T.Any]:
     """Retrieve flattened buffer data for specified keys.
     
-    Flattens buffer from [num_steps, num_envs, ...] to [num_steps * num_envs, ...] where
+    Reshapes buffer from [num_steps, num_envs, ...] to [num_steps * num_envs, ...] where
     each batch element is a complete transition tuple.
     
     Args:
@@ -140,16 +134,18 @@ class OnPolicyBuffer(T.Generic[Keys]):
     Returns:
       Dictionary mapping keys to flattened tensors or dicts of tensors with shape [num_steps * num_envs, ...].
     """
-    result = {}
-    for k in keys:
-      val = self.buffers[k]
+    assert len(self.buffers) > 0, "Buffers not initialized"
+
+    full: dict[Keys, T.Any] = {}
+    for key in keys:
+      val = self.buffers[key]
       if isinstance(val, dict):
-        # Unflat: flatten each sub-tensor
-        result[k] = {sub_k: utils.flatten_batch(sub_v) for sub_k, sub_v in val.items()}  # type: ignore
+        # Unpacked: flatten each sub-tensor
+        full[key] = {k: utils.flatten_batch(v) for k, v in val.items()}
       else:
-        # Flat: flatten single tensor
-        result[k] = utils.flatten_batch(val)  # type: ignore
-    return result  # type: ignore
+        # Packed: flatten single tensor
+        full[key] = utils.flatten_batch(val)
+    return full
 
   def get_batches(self, *keys: Keys) -> T.Iterator[dict[Keys, T.Any]]:
     """Generate training batches from the buffer.
@@ -178,15 +174,15 @@ class OnPolicyBuffer(T.Generic[Keys]):
         shuffled_indices = all_indices[torch.randperm(size, generator=self.rng)]
         for i in range(0, size, self.batch_size):
           indices = shuffled_indices[i : i + self.batch_size]  # [batch_size]
-          batch = {}
-          for k, v in full.items():
-            if isinstance(v, dict):
-              # Unflat: index each sub-tensor
-              batch[k] = {sub_k: sub_v[indices] for sub_k, sub_v in v.items()}
+          batch: dict[Keys, T.Any] = {}
+          for key, val in full.items():
+            if isinstance(val, dict):
+              # Unpacked: index each sub-tensor
+              batch[key] = {k: v[indices] for k, v in val.items()}
             else:
-              # Flat: index single tensor
-              batch[k] = v[indices]
-          yield batch  # type: ignore
+              # Packed: index single tensor
+              batch[key] = val[indices]
+          yield batch
 
   def compute_advantages(self, normalize: bool = False) -> None:
     """Compute advantages from returns and values.
@@ -194,7 +190,7 @@ class OnPolicyBuffer(T.Generic[Keys]):
     Args:
       normalize: If True, normalize advantages to have zero mean and unit std.
     """
-    buffers = T.cast(DefaultTypes, self.buffers)
+    buffers = T.cast(BufferValues, self.buffers)
     advs = buffers['returns'] - buffers['values']  # [num_steps, num_envs]
     if normalize:
       std = advs.std()
@@ -213,7 +209,7 @@ class OnPolicyBuffer(T.Generic[Keys]):
       values: Value function estimates for current observations, shape [num_steps * num_envs].
       next_values: Value function estimates for next observations, shape [num_steps * num_envs].
     """
-    buffers = T.cast(DefaultTypes, self.buffers)
+    buffers = T.cast(BufferValues, self.buffers)
     shape = buffers['rewards'].shape  # [num_steps, num_envs]
     buffers['values'] = values.reshape(shape)
     buffers['next_values'] = next_values.reshape(shape)

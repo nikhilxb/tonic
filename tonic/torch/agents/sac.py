@@ -6,13 +6,13 @@ from tonic.torch import agents, explorations, models, updaters
 def default_model():
     return models.ActorTwinCriticWithTargets(
         actor=models.Actor(
-            encoder=models.ObservationEncoder(),
+            encoder=models.BoxObservationEncoder(),
             torso=models.MLP((256, 256), torch.nn.ReLU),
             head=models.GaussianPolicyHead(
                 loc_activation=torch.nn.Identity,
                 distribution=models.SquashedMultivariateNormalDiag)),
         critic=models.Critic(
-            encoder=models.ObservationActionEncoder(),
+            encoder=models.BoxObservationActionEncoder(),
             torso=models.MLP((256, 256), torch.nn.ReLU),
             head=models.ValueHead()),
         observation_normalizer=models.MeanStdNormalizer())

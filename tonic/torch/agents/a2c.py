@@ -10,11 +10,11 @@ from tonic.torch import agents, models, replays, updaters
 def a2c_default_model():
     return models.ActorCritic(
         actor=models.Actor(
-            encoder=models.ObservationEncoder(),
+            encoder=models.BoxObservationEncoder(),
             torso=models.MLP((64, 64), torch.nn.Tanh),
             head=models.DetachedScaleGaussianPolicyHead()),
         critic=models.Critic(
-            encoder=models.ObservationEncoder(),
+            encoder=models.BoxObservationEncoder(),
             torso=models.MLP((64, 64), torch.nn.Tanh),
             head=models.ValueHead()),
         observation_normalizer=models.MeanStdNormalizer())
@@ -56,7 +56,7 @@ class A2C(agents.Agent):
         self.critic_updater.initialize(self.model)
 
     @T.override
-    def step(self, observations: torch.Tensor | dict[str, torch.Tensor], steps: int):
+    def step(self, observations: torch.Tensor | dict[str, torch.Tensor], step: int):
         # Sample actions and get their log-probabilities for training.
         actions, log_probs = self._step(observations)
         actions = actions.numpy()
@@ -70,7 +70,7 @@ class A2C(agents.Agent):
         return actions
 
     @T.override
-    def test_step(self, observations: torch.Tensor | dict[str, torch.Tensor], steps: int):
+    def test_step(self, observations: torch.Tensor | dict[str, torch.Tensor], step: int):
         # Sample actions for testing.
         return self._test_step(observations).numpy()
 
@@ -87,10 +87,10 @@ class A2C(agents.Agent):
         self.replay.record({
             'observations': self.last_observations,
             'actions': self.last_actions,
-            'next_observations': observations,
             'rewards': rewards,
             'resets': resets,
             'terminations': terminations,
+            'next_observations': observations,
             'log_probs': self.last_log_probs,
         })
 
