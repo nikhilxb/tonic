@@ -82,7 +82,7 @@ class TRPO(agents.A2C):
             logger.store('actor/' + k, v.numpy())
 
         critic_iterations = 0
-        for batch in self.replay.get_batches('observations', 'returns'):
+        for batch in self.replay.get_minibatches('observations', 'returns'):
             batch = {k: torch.as_tensor(v) for k, v in batch.items()}
             infos = self.critic_updater(**batch)
             critic_iterations += 1

@@ -14,12 +14,12 @@ class MLP(torch.nn.Module):
   ):
     """
     Args:
-      sizes: Hidden layer sizes (e.g., `[256, 256]` for two hidden layers).
+      sizes: Hidden layer sizes (e.g., `(256, 256)` for two hidden layers).
       activation: Activation function factory (e.g., `torch.nn.ReLU`).
       fn: Optional initialization function applied to all layers.
     """
     super().__init__()
-    self.sizes = list(sizes)
+    self.sizes = tuple(sizes)
     self.activation = activation
     self.fn = fn
 
@@ -31,7 +31,7 @@ class MLP(torch.nn.Module):
     Returns:
       Output feature dimension (size of last hidden layer).
     """
-    sizes = [input_size] + self.sizes
+    sizes = (input_size,) + self.sizes
     layers = []
     for i in range(len(sizes) - 1):
       layers.extend([

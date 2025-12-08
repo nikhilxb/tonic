@@ -37,32 +37,28 @@ class OffPolicyBuffer(T.Generic[Keys]):
 
   def __init__(
     self,
-    size: int = 1_000_000,
-    return_steps: int = 1,
-    batch_iterations: int = 50,
-    batch_size: int = 100,
+    max_samples: int = 1_000_000,
     discount_factor: float = 0.99,
-    steps_before_batches: int = 10_000,
-    steps_between_batches: int = 50,
+    return_steps: int = 1,
   ):
     """Initialize the off-policy replay buffer.
     
     Args:
-      size: Maximum total transitions across all environments.
+      max_samples: Maximum total transition samples across all environments.
+      discount_factor: Discount factor (gamma) for n-step bootstrapped return computation.
       return_steps: Number of steps for n-step bootstrapped returns.
-      batch_iterations: Number of batch iterations per training epoch.
-      batch_size: Size of minibatches for SGD updates.
-      discount_factor: Discount factor (gamma) for return computation.
-      steps_before_batches: Minimum steps before buffer is first ready.
-      steps_between_batches: Minimum steps between successive calls when buffer is ready.
     """
-    self.max_transitions = size
-    self.return_steps = return_steps
-    self.batch_iterations = batch_iterations
-    self.batch_size = batch_size
+    self.max_samples = max_samples
     self.discount_factor = discount_factor
-    self.steps_before_batches = steps_before_batches
-    self.steps_between_batches = steps_between_batches
+    self.return_steps = return_steps
+
+    # Each buffer stores a tensor or dict of tensors, [max_steps, num_envs, ...].
+    self._buffers: dict[str, torch.Tensor | dict[str, torch.Tensor]] = {}
+    self._cumulative_steps: int = 0
+    self._max_steps: int = 0
+    self._num_steps: int = 0
+    self._num_envs: int = 0
+    self._index: int = 0
 
   def initialize(self, seed: int) -> None:
     """Initialize buffer state and random number generator.
@@ -70,27 +66,42 @@ class OffPolicyBuffer(T.Generic[Keys]):
     Args:
       seed: Random seed for reproducible sampling.
     """
-    self.rng = torch.Generator().manual_seed(seed)
-    # Each buffer stores a tensor or dict of tensors, [max_size, num_envs, ...].
-    self.buffers: dict[str, torch.Tensor | dict[str, torch.Tensor]] = {}
-    self.index: int = 0
-    self.size: int = 0
-    self.max_size: int = 0
-    self.num_envs: int = 0
-    self.last_step: int = 0
+    self._rng = torch.Generator().manual_seed(seed)
 
-  def ready(self, step: int) -> bool:
-    """Check if buffer is ready for training.
-    
-    Args:
-      step: Current step number.
-      
-    Returns:
-      True if enough steps have elapsed since last training and initial warmup is done.
+  def is_full(self) -> bool:
     """
-    if step < self.steps_before_batches:
-      return False
-    return (step - self.last_step) >= self.steps_between_batches
+    Returns:
+      True if the buffer has `max_samples` stored transition samples.
+    """
+    return self._num_steps * self._num_envs == self.max_samples
+  
+  def num_steps(self) -> int:
+    """
+    Returns:
+      Number of steps currently in the buffer.
+    """
+    return self._num_steps
+  
+  def num_samples(self) -> int:
+    """
+    Returns:
+      Number of samples currently in the buffer (`num_samples = num_steps * num_envs`).
+    """
+    return self._num_steps * self._num_envs
+  
+  def cumulative_steps(self) -> int:
+    """
+    Returns:
+      Cumulative number of steps recorded since initialization.
+    """
+    return self._cumulative_steps
+  
+  def cumulative_samples(self) -> int:
+    """
+    Returns:
+      Cumulative number of samples recorded since initialization.
+    """
+    return self._cumulative_steps * self._num_envs
 
   def record(self, keyvals: RecordValues) -> None:
     """Record a single timestep of transitions from parallel environments.
@@ -105,43 +116,44 @@ class OffPolicyBuffer(T.Generic[Keys]):
     keyvals['discounts'] = continuations * self.discount_factor
 
     # Initialize buffers on first call.
-    if len(self.buffers) == 0:
+    if len(self._buffers) == 0:
       first_val = T.cast(torch.Tensor | dict[str, torch.Tensor], list(keyvals.values())[0])
       if isinstance(first_val, dict):
-        self.num_envs = list(first_val.values())[0].shape[0]  # [num_envs, ...]
+        self._num_envs = list(first_val.values())[0].shape[0]  # [num_envs, ...]
       else:
-        self.num_envs = first_val.shape[0]  # [num_envs, ...]
-      self.max_size = self.max_transitions // self.num_envs
+        self._num_envs = first_val.shape[0]  # [num_envs, ...]
+      self._max_steps = self.max_samples // self._num_envs
       
       for key, val in keyvals.items():
         if isinstance(val, dict):
           # Unpacked: create nested dict of buffers
-          self.buffers[key] = {
-            k: torch.empty((self.max_size,) + v.shape, dtype=v.dtype, device=v.device)
+          self._buffers[key] = {
+            k: torch.empty((self._max_steps,) + v.shape, dtype=v.dtype, device=v.device)
             for k, v in val.items()
           }
         else:
           # Packed: create single buffer
-          shape = (self.max_size,) + val.shape  # [max_size, num_envs, ...]
-          self.buffers[key] = torch.empty(shape, dtype=val.dtype, device=val.device)
+          shape = (self._max_steps,) + val.shape  # [max_steps, num_envs, ...]
+          self._buffers[key] = torch.empty(shape, dtype=val.dtype, device=val.device)
 
     # Store current timestep data.
     for key, val in keyvals.items():
       if isinstance(val, dict):
         for k, v in val.items():
-          self.buffers[key][k][self.index] = v  # type: ignore
+          self._buffers[key][k][self._index] = v  # type: ignore
       else:
-        self.buffers[key][self.index] = val  # type: ignore
+        self._buffers[key][self._index] = val  # type: ignore
 
     # Accumulate n-step returns by updating past entries.
     if self.return_steps > 1:
-      self._accumulate_n_steps(keyvals)
+      self._compute_nstep_returns(keyvals)
 
-    self.index = (self.index + 1) % self.max_size
-    self.size = min(self.size + 1, self.max_size)
+    self._index = (self._index + 1) % self._max_steps
+    self._num_steps = min(self._num_steps + 1, self._max_steps)
+    self._cumulative_steps += 1
 
-  def _accumulate_n_steps(self, keyvals: RecordValues) -> None:
-    """Accumulate n-step returns by updating past buffer entries.
+  def _compute_nstep_returns(self, keyvals: RecordValues) -> None:
+    """Compute n-step returns by updating past buffer entries.
     
     For each of the past n-1 transitions, updates their rewards, discounts, and next
     observations to reflect n-step bootstrapping. Uses masks to avoid accumulation
@@ -154,12 +166,11 @@ class OffPolicyBuffer(T.Generic[Keys]):
     rewards = keyvals['rewards']  # [num_envs]
     next_observations = keyvals['next_observations']  # tensor/dict, [num_envs, observation_size]
     discounts = keyvals['discounts']  # [num_envs]
-    # Masks track which environments haven't encountered episode boundaries (resets).
-    masks = torch.ones(self.num_envs, device=rewards.device)  # [num_envs]
+    masks = torch.ones(self._num_envs, device=rewards.device)  # [num_envs]
     
-    buffers = T.cast(BufferValues, self.buffers)
-    for i in range(min(self.size, self.return_steps - 1)):
-      index = (self.index - i - 1) % self.max_size
+    buffers = T.cast(BufferValues, self._buffers)
+    for i in range(min(self._num_steps, self.return_steps - 1)):
+      index = (self._index - i - 1) % self._max_steps
       # Zero out masks for environments that hit episode boundaries.
       masks *= (1 - buffers['resets'][index])  # [num_envs]
       
@@ -190,7 +201,7 @@ class OffPolicyBuffer(T.Generic[Keys]):
           masks[:, None] * next_observations
         )
 
-  def get_batches(self, *keys: Keys, step: int) -> T.Iterator[dict[Keys, T.Any]]:
+  def get_minibatch(self, *keys: Keys, size: int) -> dict[Keys, T.Any]:
     """Generate random minibatches from the buffer.
     
     Samples uniformly from all stored transitions to produce training batches.
@@ -201,28 +212,24 @@ class OffPolicyBuffer(T.Generic[Keys]):
       step: Current step number.
       
     Yields:
-      Dictionary mapping keys to batch tensors with shape [batch_size, ...].
+      Dictionary mapping keys to batch tensors with shape [size, ...].
     """
-    assert len(self.buffers) > 0, "Buffers not initialized"
+    assert len(self._buffers) > 0, "Buffers not initialized"
     
-    for _ in range(self.batch_iterations):
-      num_transitions = self.size * self.num_envs
-      # Indices of random subset from the full buffer, [batch_size].
-      indices = torch.randint(
-        num_transitions, (self.batch_size,), generator=self.rng, dtype=torch.long
-      )
-      rows = indices // self.num_envs  # Step indices, 0 <= rows < self.size.
-      cols = indices % self.num_envs  # Environment indices, 0 <= cols < self.num_envs.
-      
-      batch: dict[Keys, T.Any] = {}
-      for key in keys:
-        val = self.buffers[key]
-        if isinstance(val, dict):
-          # Unpacked: index each sub-tensor
-          batch[key] = {k: v[rows, cols] for k, v in val.items()}
-        else:
-          # Packed: index single tensor
-          batch[key] = val[rows, cols]
-      yield batch
+    num_samples = self._num_steps * self._num_envs
+    # Indices of random subset from the full buffer, [size].
+    indices = torch.randint(num_samples, (size,), generator=self._rng, dtype=torch.long)
+    steps = indices // self._num_envs  # Step indices, 0 <= steps < self.num_steps.
+    envs = indices % self._num_envs  # Environment indices, 0 <= envs < self.num_envs.
     
-    self.last_step = step
+    minibatch: dict[Keys, T.Any] = {}
+    for key in keys:
+      val = self._buffers[key]
+      if isinstance(val, dict):
+        # Unpacked: index each sub-tensor
+        minibatch[key] = {k: v[steps, envs] for k, v in val.items()}
+      else:
+        # Packed: index single tensor
+        minibatch[key] = val[steps, envs]
+    return minibatch
+    

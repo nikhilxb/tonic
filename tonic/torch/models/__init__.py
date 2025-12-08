@@ -2,6 +2,7 @@ from .actor_critics import ActorOnly
 from .actor_critics import ActorCritic
 from .actor_critics import ActorCriticWithTargets
 from .actor_critics import ActorTwinCriticWithTargets
+from .actor_critics import trainable_variables
 
 from .actors import ActorLike, Actor, ActorEncoder, ActorTorso, ActorHead
 from .actors import GaussianPolicyHead, DetachedScaleGaussianPolicyHead, DeterministicPolicyHead
@@ -19,6 +20,3 @@ from .networks import MLP
 from .normalizers import MeanStdNormalizer, NegPosNormalizer, meanstd_builder, posneg_builder
 from .normalizers import ObservationNormalizer
 from .normalizers import DiscountedMinMaxNormalizer, ReturnNormalizer
-
-from .utils import trainable_variables
-from .utils import pack_space, pack_ndarrays, unpack_ndarrays, pack_tensors, unpack_tensors

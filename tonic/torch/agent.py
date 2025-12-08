@@ -4,61 +4,54 @@ import random
 
 import numpy as np
 import torch
+import gym.spaces
 
 from tonic import logger
 
 
 Observation = torch.Tensor | dict[str, torch.Tensor]
+ObservationSpace = gym.spaces.Box | gym.spaces.Dict
 Action = torch.Tensor | dict[str, torch.Tensor]
+ActionSpace = gym.spaces.Box | gym.spaces.Dict
 
 
 class Agent(abc.ABC):
   model: torch.nn.Module
 
-  def initialize(self, seed: int):
-    if seed is not None:
-      np.random.seed(seed)
-      random.seed(seed)
-      torch.manual_seed(seed)
+  def initialize(
+    self,
+    observation_space: ObservationSpace,
+    action_space: ActionSpace,
+    seed: int,
+  ) -> None:
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
 
   @abc.abstractmethod
-  def step(
-    self,
-    observations: Observation,
-    step: int,
-  ) -> Action:
+  def step(self, observations: Observation) -> Action:
     """Returns actions during training."""
     pass
 
-  def update(
+  @abc.abstractmethod
+  def test_step(self, observations: Observation) -> Action:
+    """Returns actions during testing."""
+    pass
+
+  def record(
     self,
     observations: Observation,
+    actions: Action,
     rewards: torch.Tensor,
     resets: torch.Tensor,
     terminations: torch.Tensor,
-    step: int,
+    next_observations: Observation,
   ) -> None:
     """Informs the agent of the latest transitions during training."""
     pass
 
-  @abc.abstractmethod
-  def test_step(
-    self,
-    observations: Observation,
-    step: int,
-  ) -> Action:
-    """Returns actions during testing."""
-    pass
-
-  def test_update(
-    self,
-    observations: Observation,
-    rewards: torch.Tensor,
-    resets: torch.Tensor,
-    terminations: torch.Tensor,
-    step: int,
-  ) -> None:
-    """Informs the agent of the latest transitions during testing."""
+  def update(self) -> None:
+    """Updates the parameters of the agent during training."""
     pass
 
   def save(self, path: str) -> None:

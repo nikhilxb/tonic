@@ -30,7 +30,7 @@ class PPO(agents.A2C):
         keys = 'observations', 'actions', 'advantages', 'log_probs', 'returns'
 
         # Update both the actor and the critic multiple times.
-        for batch in self.replay.get_batches(*keys):
+        for batch in self.replay.get_minibatches(*keys):
             if train_actor:
                 batch = {k: torch.as_tensor(v) for k, v in batch.items()}
                 infos = self._update_actor_critic(**batch)

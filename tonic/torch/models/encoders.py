@@ -3,7 +3,8 @@ import typing as T
 import torch
 import gym.spaces
 
-from . import normalizers, utils
+from .. import agent, utils
+from . import normalizers
 
 
 # ==================================================================================================
@@ -15,8 +16,8 @@ class BoxObservationEncoder(torch.nn.Module):
 
   def initialize(
     self,
-    observation_space: gym.spaces.Box | gym.spaces.Dict,
-    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
     observation_normalizer: normalizers.ObservationNormalizer | None = None,
   ) -> int:
     """
@@ -38,7 +39,7 @@ class BoxObservationEncoder(torch.nn.Module):
   def forward(self, observations: torch.Tensor, /) -> torch.Tensor:
     ...
   @T.overload
-  def forward(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.NoReturn:
+  def forward(self, *inputs: agent.Observation) -> T.NoReturn:
     ...
   def forward(self, *inputs) -> torch.Tensor:
     """
@@ -48,7 +49,7 @@ class BoxObservationEncoder(torch.nn.Module):
     Returns:
       Normalized observations `[batch_size, observation_size]`.
     """
-    observations, = inputs
+    observations, = T.cast(tuple[torch.Tensor], inputs)
     if self.observation_normalizer:
       observations = self.observation_normalizer(observations)  # [batch, obs]
     return observations
@@ -59,8 +60,8 @@ class BoxObservationActionEncoder(torch.nn.Module):
 
   def initialize(
     self,
-    observation_space: gym.spaces.Box | gym.spaces.Dict,
-    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
     observation_normalizer: normalizers.ObservationNormalizer | None = None,
   ) -> int:
     """
@@ -85,7 +86,7 @@ class BoxObservationActionEncoder(torch.nn.Module):
   def forward(self, observations: torch.Tensor, actions: torch.Tensor, /) -> torch.Tensor:
     ...
   @T.overload
-  def forward(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.NoReturn:
+  def forward(self, *inputs: agent.Observation) -> T.NoReturn:
     ...
   def forward(self, *inputs) -> torch.Tensor:
     """
@@ -95,7 +96,7 @@ class BoxObservationActionEncoder(torch.nn.Module):
     Returns:
       Concatenated tensor `[batch_size, observation_size + action_size]`.
     """
-    observations, actions = inputs
+    observations, actions = T.cast(tuple[torch.Tensor, torch.Tensor], inputs)
     if self.observation_normalizer:
       observations = self.observation_normalizer(observations)  # [batch, obs]
     return torch.cat([observations, actions], dim=-1)  # [batch, obs + act]
@@ -118,8 +119,8 @@ class DictObservationEncoder(torch.nn.Module):
 
   def initialize(
     self,
-    observation_space: gym.spaces.Box | gym.spaces.Dict,
-    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
     observation_normalizer: normalizers.ObservationNormalizer | None = None,
   ) -> int:
     """
@@ -145,7 +146,7 @@ class DictObservationEncoder(torch.nn.Module):
   def forward(self, observations: dict[str, torch.Tensor], /) -> torch.Tensor:
     ...
   @T.overload
-  def forward(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.NoReturn:
+  def forward(self, *inputs: agent.Observation) -> T.NoReturn:
     ...
   def forward(self, *inputs) -> torch.Tensor:
     """
@@ -155,7 +156,7 @@ class DictObservationEncoder(torch.nn.Module):
     Returns:
       Normalized observations `[batch_size, observation_size]`.
     """
-    observations = T.cast(dict[str, torch.Tensor], inputs[0])
+    observations, = T.cast(tuple[dict[str, torch.Tensor]], inputs)
     observations = {
       k: v for k, v in observations.items() if k.startswith(self.observation_prefix)
     }
@@ -178,8 +179,8 @@ class DictObservationActionEncoder(torch.nn.Module):
 
   def initialize(
     self,
-    observation_space: gym.spaces.Dict,
-    action_space: gym.spaces.Dict,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
     observation_normalizer: normalizers.DictNormalizer | None = None,
   ) -> int:
     """
@@ -215,7 +216,7 @@ class DictObservationActionEncoder(torch.nn.Module):
   ) -> torch.Tensor:
     ...
   @T.overload
-  def forward(self, *inputs: torch.Tensor | dict[str, torch.Tensor]) -> T.NoReturn:
+  def forward(self, *inputs: agent.Observation) -> T.NoReturn:
     ...
   def forward(self, *inputs) -> torch.Tensor:
     """

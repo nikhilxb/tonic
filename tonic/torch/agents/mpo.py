@@ -1,7 +1,7 @@
 import torch
 
 from tonic import logger
-from tonic.torch import agents, models, replays, updaters
+from tonic.torch import agent, models, replays, updaters
 
 
 def default_model():
@@ -17,7 +17,7 @@ def default_model():
         observation_normalizer=models.MeanStdNormalizer())
 
 
-class MPO(agents.Agent):
+class MPO(agent.Agent):
     '''Maximum a Posteriori Policy Optimisation.
     MPO: https://arxiv.org/pdf/1806.06920.pdf
     MO-MPO: https://arxiv.org/pdf/2005.07513.pdf

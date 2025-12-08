@@ -1,16 +1,18 @@
 import typing as T
+import math
 
 import torch
 import gym.spaces
-import numpy as np
 
-from . import normalizers, utils
+
+from .. import utils
+from . import normalizers
 
 
 FLOAT_EPSILON = 1e-8
 
 
-class SquashedMultivariateNormalDiag:
+class SquashedMultivariateNormalDiag(torch.distributions.Distribution):
   """Tanh-squashed multivariate normal distribution for bounded action spaces (SAC)."""
 
   def __init__(self, loc: float | torch.Tensor, scale: float | torch.Tensor):
@@ -122,7 +124,7 @@ class DetachedScaleGaussianPolicyHead(torch.nn.Module):
     if isinstance(action_space, gym.spaces.Dict):
       raise NotImplementedError('Dict action spaces not yet supported for Gaussian policies')
     assert action_space.shape is not None
-    action_size = int(np.prod(action_space.shape))
+    action_size = math.prod(action_space.shape)
     self.loc_layer = torch.nn.Sequential(
       torch.nn.Linear(input_size, action_size),
       self.loc_activation(),
@@ -162,7 +164,7 @@ class GaussianPolicyHead(torch.nn.Module):
     scale_min: float = 1e-4,
     scale_max: float = 1,
     scale_fn: T.Callable[[torch.nn.Module], None] | None = None,
-    distribution: T.Type[torch.distributions.normal.Normal] = torch.distributions.normal.Normal,
+    distribution: T.Type[torch.distributions.normal.Normal] | T.Type[SquashedMultivariateNormalDiag] = torch.distributions.normal.Normal,
   ):
     """Initialize the policy head.
     
@@ -194,7 +196,7 @@ class GaussianPolicyHead(torch.nn.Module):
     if isinstance(action_space, gym.spaces.Dict):
       raise NotImplementedError('Dict action spaces not yet supported for Gaussian policies')
     assert action_space.shape is not None
-    action_size = int(np.prod(action_space.shape))
+    action_size = math.prod(action_space.shape)
     self.loc_layer = torch.nn.Sequential(
       torch.nn.Linear(input_size, action_size),
       self.loc_activation(),
@@ -254,7 +256,7 @@ class DeterministicPolicyHead(torch.nn.Module):
     self.action_space = action_space
     if isinstance(action_space, gym.spaces.Dict):
       action_space = utils.pack_space(action_space)
-    action_size = int(np.prod(action_space.shape))
+    action_size = math.prod(action_space.shape)
     self.action_layer = torch.nn.Sequential(
       torch.nn.Linear(input_size, action_size, bias=self.bias),
       self.activation(),

@@ -2,12 +2,10 @@ import typing as T
 
 import gym
 import gym.spaces
-import numpy as np
 import torch
 
 
-ArrayLike = float | T.Sequence[float] | np.ndarray
-
+ArrayLike = float | T.Sequence[float] | torch.Tensor
 
 # ==================================================================================================
 # Observation normalizers

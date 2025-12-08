@@ -15,7 +15,13 @@ import typing as T
 import torch
 import gym.spaces
 
-from . import actors, critics, normalizers, utils
+from .. import agent
+from . import actors, critics, normalizers
+
+
+def trainable_variables(model: torch.nn.Module) -> list[torch.nn.Parameter]:
+  """Returns the parameters of the `torch.nn.Module` with `requires_grad=True`."""
+  return [p for p in model.parameters() if p.requires_grad]
 
 
 class ActorOnly(torch.nn.Module):
@@ -32,8 +38,8 @@ class ActorOnly(torch.nn.Module):
 
   def initialize(
     self,
-    observation_space: gym.spaces.Box | gym.spaces.Dict,
-    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
   ) -> None:
     if self.observation_normalizer:
       self.observation_normalizer.initialize(observation_space)  # type: ignore
@@ -62,8 +68,8 @@ class ActorCritic(torch.nn.Module):
 
   def initialize(
     self,
-    observation_space: gym.spaces.Box | gym.spaces.Dict,
-    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
   ) -> None:
     if self.observation_normalizer:
       self.observation_normalizer.initialize(observation_space)  # type: ignore
@@ -102,8 +108,8 @@ class ActorCriticWithTargets(torch.nn.Module):
 
   def initialize(
     self,
-    observation_space: gym.spaces.Box | gym.spaces.Dict,
-    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
   ) -> None:
     if self.observation_normalizer:
       self.observation_normalizer.initialize(observation_space)  # type: ignore
@@ -130,12 +136,12 @@ class ActorCriticWithTargets(torch.nn.Module):
       self.return_normalizer,
     )
     self.online_variables = [
-      *utils.trainable_variables(T.cast(torch.nn.Module, self.actor)),
-      *utils.trainable_variables(T.cast(torch.nn.Module, self.critic)),
+      *trainable_variables(T.cast(torch.nn.Module, self.actor)),
+      *trainable_variables(T.cast(torch.nn.Module, self.critic)),
     ]
     self.target_variables = [
-      *utils.trainable_variables(T.cast(torch.nn.Module, self.target_actor)),
-      *utils.trainable_variables(T.cast(torch.nn.Module, self.target_critic)),
+      *trainable_variables(T.cast(torch.nn.Module, self.target_actor)),
+      *trainable_variables(T.cast(torch.nn.Module, self.target_critic)),
     ]
     for target in self.target_variables:
       target.requires_grad = False
@@ -177,8 +183,8 @@ class ActorTwinCriticWithTargets(torch.nn.Module):
 
   def initialize(
     self,
-    observation_space: gym.spaces.Box | gym.spaces.Dict,
-    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
   ) -> None:
     if self.observation_normalizer:
       self.observation_normalizer.initialize(observation_space)  # type: ignore
@@ -217,14 +223,14 @@ class ActorTwinCriticWithTargets(torch.nn.Module):
       self.return_normalizer,
     )
     self.online_variables = [
-      *utils.trainable_variables(T.cast(torch.nn.Module, self.actor)),
-      *utils.trainable_variables(T.cast(torch.nn.Module, self.critic_1)),
-      *utils.trainable_variables(T.cast(torch.nn.Module, self.critic_2)),
+      *trainable_variables(T.cast(torch.nn.Module, self.actor)),
+      *trainable_variables(T.cast(torch.nn.Module, self.critic_1)),
+      *trainable_variables(T.cast(torch.nn.Module, self.critic_2)),
     ]
     self.target_variables = [
-      *utils.trainable_variables(T.cast(torch.nn.Module, self.target_actor)),
-      *utils.trainable_variables(T.cast(torch.nn.Module, self.target_critic_1)),
-      *utils.trainable_variables(T.cast(torch.nn.Module, self.target_critic_2)),
+      *trainable_variables(T.cast(torch.nn.Module, self.target_actor)),
+      *trainable_variables(T.cast(torch.nn.Module, self.target_critic_1)),
+      *trainable_variables(T.cast(torch.nn.Module, self.target_critic_2)),
     ]
     for target in self.target_variables:
       target.requires_grad = False

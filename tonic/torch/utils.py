@@ -8,10 +8,6 @@ import numpy as np
 import torch
 
 
-def trainable_variables(model: torch.nn.Module) -> list[torch.nn.Parameter]:
-  """Returns the parameters of the `torch.nn.Module` with `requires_grad=True`."""
-  return [p for p in model.parameters() if p.requires_grad]
-
 
 # ==================================================================================================
 # Packing
@@ -70,4 +66,53 @@ def _unpack_tensors_dict(space: gym.spaces.Dict, value: torch.Tensor) -> collect
   chunks = torch.split(value, [gym.spaces.utils.flatdim(sp) for sp in space.spaces.values()])
   return collections.OrderedDict([
     (key, unpack_tensors(sp, chunk)) for chunk, (key, sp) in zip(chunks, space.spaces.items())
+  ])
+
+
+# ==================================================================================================
+# Sampling
+
+@functools.singledispatch
+def sample_tensors(
+  space: gym.spaces.Space[V],
+  *,
+  shape: tuple[int, ...] = (),
+  device: torch.device | None = None,
+  rng: torch.Generator | None = None,
+) -> V:
+  """Sample tensors from a gym space.
+  
+  Args:
+    space: Structured space.
+    shape: Batch shape of sampled tensors
+
+  Returns:
+    Sampled pytree of tensors.
+  """
+  raise NotImplementedError(f'Unknown space: `{space}`')
+
+@sample_tensors.register(gym.spaces.Box)
+def _sample_tensors_box(
+  space: gym.spaces.Box,
+  *,
+  shape: tuple[int, ...] = (),
+  device: torch.device | None = None,
+  rng: torch.Generator | None = None,
+) -> torch.Tensor:
+  low = torch.as_tensor(space.low, dtype=torch.float32, device=device)
+  high = torch.as_tensor(space.high, dtype=torch.float32, device=device)
+  return low + (high - low) * torch.rand(shape + space.shape, generator=rng, device=device)
+  
+  
+
+@sample_tensors.register(gym.spaces.Dict)
+def _sample_tensors_dict(
+  space: gym.spaces.Dict,
+  *,
+  shape: tuple[int, ...] = (),
+  device: torch.device | None = None,
+  rng: torch.Generator | None = None,
+) -> collections.OrderedDict[str, T.Any]:
+  return collections.OrderedDict([
+    (key, sample_tensors(sp, shape=shape, device=device, rng=rng)) for key, sp in space.spaces.items()
   ])

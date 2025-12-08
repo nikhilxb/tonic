@@ -1,4 +1,1 @@
-from . import agents, models, normalizers, updaters
-
-
-__all__ = [agents, models, normalizers, updaters]
+from . import agent, agents, models, normalizers, updaters, utils

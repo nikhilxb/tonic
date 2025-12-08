@@ -2,10 +2,10 @@
 
 import numpy as np
 
-from tonic.torch import agents
+from tonic.torch import agent
 
 
-class NormalRandom(agents.Agent):
+class NormalRandom(agent.Agent):
     '''Random agent producing actions from normal distributions.'''
 
     def __init__(self, loc=0, scale=1):
@@ -28,7 +28,7 @@ class NormalRandom(agents.Agent):
         return self.np_random.normal(self.loc, self.scale, shape)
 
 
-class UniformRandom(agents.Agent):
+class UniformRandom(agent.Agent):
     '''Random agent producing actions from uniform distributions.'''
 
     def initialize(self, observation_space, action_space, seed=None):
@@ -47,7 +47,7 @@ class UniformRandom(agents.Agent):
         return self.np_random.uniform(-1, 1, shape)
 
 
-class OrnsteinUhlenbeck(agents.Agent):
+class OrnsteinUhlenbeck(agent.Agent):
     '''Random agent producing correlated actions from an OU process.'''
 
     def __init__(self, scale=0.2, clip=2, theta=.15, dt=1e-2):
@@ -97,7 +97,7 @@ class OrnsteinUhlenbeck(agents.Agent):
         self.test_actions *= (1. - resets)[:, None]
 
 
-class Constant(agents.Agent):
+class Constant(agent.Agent):
     '''Agent producing a unique constant action.'''
 
     def __init__(self, constant=0):
