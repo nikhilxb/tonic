@@ -7,6 +7,9 @@ from tonic import logger
 from tonic.torch import agent, explorations, models, replays, updaters
 
 
+# ==================================================================================================
+# Model
+
 def ddpg_default_model():
   return models.ActorCriticWithTargets(
     actor=models.Actor(
@@ -23,16 +26,16 @@ def ddpg_default_model():
   )
 
 
-DDPGReplayKeys = T.Literal[
-  'observations',
-  'actions',
-  'rewards',
-  'resets',
-  'terminations',
-  'next_observations',
-  'discounts',
-]
+# ==================================================================================================
+# Replay
 
+DDPGKeys = replays.OffPolicyKeys
+DDPGData = replays.OffPolicyData
+DDPGStep = replays.OffPolicyStep
+
+
+# ==================================================================================================
+# Agent
 
 class DDPG(agent.Agent):
   """Deep Deterministic Policy Gradient. https://arxiv.org/pdf/1509.02971.pdf"""
@@ -41,7 +44,6 @@ class DDPG(agent.Agent):
   def __init__(
     self,
     model: models.ActorCriticWithTargets | None = None,
-    replay: replays.OffPolicyBuffer[DDPGReplayKeys] | None = None,
     exploration: explorations.NormalActionNoise | None = None,
     actor_updater: updaters.DeterministicPolicyGradient | None = None,
     critic_updater: updaters.DeterministicQLearning | None = None,
@@ -56,14 +58,14 @@ class DDPG(agent.Agent):
     return_steps: int = 1,
   ):
     self.model = model or ddpg_default_model()
-    self.replay = replay or replays.OffPolicyBuffer[DDPGReplayKeys](
+    self.exploration = exploration or explorations.NormalActionNoise(warmup_samples=warmup_samples)
+    self.actor_updater = actor_updater or updaters.DeterministicPolicyGradient()
+    self.critic_updater = critic_updater or updaters.DeterministicQLearning()
+    self.replay = replays.OffPolicyReplay[DDPGKeys, DDPGData, DDPGStep](
       max_samples=replay_samples,
       discount_factor=discount_factor,
       return_steps=return_steps,
     )
-    self.exploration = exploration or explorations.NormalActionNoise(warmup_samples=warmup_samples)
-    self.actor_updater = actor_updater or updaters.DeterministicPolicyGradient()
-    self.critic_updater = critic_updater or updaters.DeterministicQLearning()
     self.replay_samples = replay_samples
     self.warmup_samples = warmup_samples
     self.rollout_steps = rollout_steps

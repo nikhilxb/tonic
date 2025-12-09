@@ -19,7 +19,7 @@ from .. import agent
 from . import actors, critics, normalizers
 
 
-def trainable_variables(model: torch.nn.Module) -> list[torch.nn.Parameter]:
+def trainable_variables(model: torch.nn.Module | T.Any) -> list[torch.nn.Parameter]:
   """Returns the parameters of the `torch.nn.Module` with `requires_grad=True`."""
   return [p for p in model.parameters() if p.requires_grad]
 
@@ -136,12 +136,12 @@ class ActorCriticWithTargets(torch.nn.Module):
       self.return_normalizer,
     )
     self.online_variables = [
-      *trainable_variables(T.cast(torch.nn.Module, self.actor)),
-      *trainable_variables(T.cast(torch.nn.Module, self.critic)),
+      *trainable_variables(self.actor),
+      *trainable_variables(self.critic),
     ]
     self.target_variables = [
-      *trainable_variables(T.cast(torch.nn.Module, self.target_actor)),
-      *trainable_variables(T.cast(torch.nn.Module, self.target_critic)),
+      *trainable_variables(self.target_actor),
+      *trainable_variables(self.target_critic),
     ]
     for target in self.target_variables:
       target.requires_grad = False
@@ -223,14 +223,14 @@ class ActorTwinCriticWithTargets(torch.nn.Module):
       self.return_normalizer,
     )
     self.online_variables = [
-      *trainable_variables(T.cast(torch.nn.Module, self.actor)),
-      *trainable_variables(T.cast(torch.nn.Module, self.critic_1)),
-      *trainable_variables(T.cast(torch.nn.Module, self.critic_2)),
+      *trainable_variables(self.actor),
+      *trainable_variables(self.critic_1),
+      *trainable_variables(self.critic_2),
     ]
     self.target_variables = [
-      *trainable_variables(T.cast(torch.nn.Module, self.target_actor)),
-      *trainable_variables(T.cast(torch.nn.Module, self.target_critic_1)),
-      *trainable_variables(T.cast(torch.nn.Module, self.target_critic_2)),
+      *trainable_variables(self.target_actor),
+      *trainable_variables(self.target_critic_1),
+      *trainable_variables(self.target_critic_2),
     ]
     for target in self.target_variables:
       target.requires_grad = False

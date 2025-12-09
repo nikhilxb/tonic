@@ -6,6 +6,9 @@ from tonic import logger
 from tonic.torch import agent, models, replays, updaters
 
 
+# ==================================================================================================
+# Model
+
 def a2c_default_model():
   return models.ActorCritic(
     actor=models.Actor(
@@ -22,20 +25,22 @@ def a2c_default_model():
   )
 
 
-A2CReplayKeys = T.Literal[
-  'observations',
-  'actions',
-  'rewards',
-  'resets',
-  'terminations',
-  'next_observations',
-  'returns',
-  'values',
-  'next_values',
-  'advantages',
-  'log_probs',
-]
+# ==================================================================================================
+# Replay
 
+A2CKeys = replays.OnPolicyKeys | T.Literal['log_probs']
+
+
+class A2CData(replays.OnPolicyData):
+  log_probs: torch.Tensor
+
+
+class A2CStep(replays.OnPolicyStep):
+  log_probs: torch.Tensor
+
+
+# ==================================================================================================
+# Agent
 
 class A2C(agent.Agent):
   """Advantage Actor Critic (i.e. Vanilla Policy Gradient). https://arxiv.org/pdf/1602.01783.pdf"""
@@ -44,7 +49,6 @@ class A2C(agent.Agent):
   def __init__(
     self,
     model: models.ActorCritic | None = None,
-    replay: replays.OnPolicyBuffer[A2CReplayKeys] | None = None,
     actor_updater: updaters.StochasticPolicyGradient | None = None,
     critic_updater: updaters.VRegression | None = None,
     # Dataset.
@@ -58,13 +62,13 @@ class A2C(agent.Agent):
     recompute_advantages: bool = True,
   ):
     self.model = model or a2c_default_model()
-    self.replay = replay or replays.OnPolicyBuffer[A2CReplayKeys](
+    self.actor_updater = actor_updater or updaters.StochasticPolicyGradient()
+    self.critic_updater = critic_updater or updaters.VRegression()
+    self.replay = replays.OnPolicyReplay[A2CKeys, A2CData, A2CStep](
       max_steps=rollout_steps,
       discount_factor=discount_factor,
       trace_decay=trace_decay,
     )
-    self.actor_updater = actor_updater or updaters.StochasticPolicyGradient()
-    self.critic_updater = critic_updater or updaters.VRegression()
     self.rollout_steps = rollout_steps
     self.minibatch_samples = minibatch_samples
     self.minibatch_iterations = minibatch_iterations
