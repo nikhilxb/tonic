@@ -1,55 +1,170 @@
+import typing as T
+
 import torch
 
-from tonic import logger  # noqa
-from tonic.torch import agents, models, updaters
+from tonic import logger
+from tonic.torch import agent, explorations, models, replays, updaters
 
 
-def default_model():
-    return models.ActorTwinCriticWithTargets(
-        actor=models.Actor(
-            encoder=models.BoxObservationEncoder(),
-            torso=models.MLP((256, 256), torch.nn.ReLU),
-            head=models.DeterministicPolicyHead()),
-        critic=models.Critic(
-            encoder=models.BoxObservationActionEncoder(),
-            torso=models.MLP((256, 256), torch.nn.ReLU),
-            head=models.ValueHead()),
-        observation_normalizer=models.MeanStdNormalizer())
+# ==================================================================================================
+# Model
+
+def td3_default_model():
+  return models.ActorTwinCriticWithTargets(
+    actor=models.Actor(
+      encoder=models.BoxObservationEncoder(),
+      torso=models.MLP((256, 256), torch.nn.ReLU),
+      head=models.DeterministicPolicyHead(),
+    ),
+    critic=models.Critic(
+      encoder=models.BoxObservationActionEncoder(),
+      torso=models.MLP((256, 256), torch.nn.ReLU),
+      head=models.ValueHead(),
+    ),
+    observation_normalizer=models.MeanStdNormalizer(),
+  )
 
 
-class TD3(agents.DDPG):
-    '''Twin Delayed Deep Deterministic Policy Gradient.
-    TD3: https://arxiv.org/pdf/1802.09477.pdf
-    '''
+# ==================================================================================================
+# Replay
 
-    def __init__(
-        self, model=None, replay=None, exploration=None, actor_updater=None,
-        critic_updater=None, delay_steps=2
-    ):
-        model = model or default_model()
-        critic_updater = critic_updater or \
-            updaters.TwinCriticDeterministicQLearning()
-        super().__init__(
-            model=model, replay=replay, exploration=exploration,
-            actor_updater=actor_updater, critic_updater=critic_updater)
-        self.delay_steps = delay_steps
-        self.model.critic = self.model.critic_1
+TD3Keys = replays.OffPolicyKeys
+TD3Data = replays.OffPolicyData
+TD3Step = replays.OffPolicyStep
 
-    def _update(self, steps):
-        keys = ('observations', 'actions', 'next_observations', 'rewards',
-                'discounts')
-        for i, batch in enumerate(self.replay.get(*keys, steps=steps)):
-            batch = {k: torch.as_tensor(v) for k, v in batch.items()}
-            if (i + 1) % self.delay_steps == 0:
-                infos = self._update_actor_critic(**batch)
-            else:
-                infos = dict(critic=self.critic_updater(**batch))
-            for key in infos:
-                for k, v in infos[key].items():
-                    logger.store(key + '/' + k, v.numpy())
 
-        # Update the normalizers.
-        if self.model.observation_normalizer:
-            self.model.observation_normalizer.update()
-        if self.model.return_normalizer:
-            self.model.return_normalizer.update()
+# ==================================================================================================
+# Agent
+
+class TD3(agent.Agent):
+  """Twin Delayed Deep Deterministic Policy Gradient. https://arxiv.org/pdf/1802.09477.pdf"""
+  model: models.ActorTwinCriticWithTargets
+
+  def __init__(
+    self,
+    model: models.ActorTwinCriticWithTargets | None = None,
+    exploration: explorations.NormalActionNoise | None = None,
+    actor_updater: updaters.DeterministicPolicyGradient | None = None,
+    critic_updater: updaters.TwinCriticDeterministicQLearning | None = None,
+    # Dataset.
+    replay_samples: int = 1_000_000,
+    warmup_samples: int = 10_000,
+    rollout_steps: int = 1,
+    minibatch_samples: int = 128,
+    minibatch_iterations: int = 50,
+    delay_iterations: int = 2,
+    # Returns.
+    discount_factor: float = 0.99,
+    return_steps: int = 1,
+  ):
+    self.model = model or td3_default_model()
+    self.exploration = exploration or explorations.NormalActionNoise(warmup_samples=warmup_samples)
+    self.actor_updater = actor_updater or updaters.DeterministicPolicyGradient()
+    self.critic_updater = critic_updater or updaters.TwinCriticDeterministicQLearning()
+    self.replay = replays.OffPolicyReplay[TD3Keys, TD3Data, TD3Step](
+      max_samples=replay_samples,
+      discount_factor=discount_factor,
+      return_steps=return_steps,
+    )
+    self.replay_samples = replay_samples
+    self.warmup_samples = warmup_samples
+    self.rollout_steps = rollout_steps
+    self.minibatch_samples = minibatch_samples
+    self.minibatch_iterations = minibatch_iterations
+    self.delay_iterations = delay_iterations
+    self.last_update_step = 0
+
+  def initialize(
+    self,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
+    seed: int,
+  ) -> None:
+    super().initialize(observation_space, action_space, seed)
+    self.model.initialize(observation_space, action_space)
+    self.replay.initialize(seed)
+    self.exploration.initialize(lambda obs: self.model.actor(obs), action_space, seed)
+    self.actor_updater.initialize(self.model)
+    self.critic_updater.initialize(self.model)
+
+  @T.override
+  def step(self, observations: agent.Observation) -> agent.Action:
+    # Get actions with exploration noise for training.
+    with torch.no_grad():
+      return self.exploration(observations, self.replay.cumulative_samples())
+
+  @T.override
+  def test_step(self, observations: agent.Observation) -> agent.Action:
+    # Greedy actions for testing.
+    with torch.no_grad():
+      return self.model.actor(observations)
+    
+  @T.override
+  def record(
+    self,
+    observations: agent.Observation,
+    actions: agent.Action,
+    rewards: torch.Tensor,
+    resets: torch.Tensor,
+    terminations: torch.Tensor,
+    next_observations: agent.Observation,
+  ) -> None:
+    # Record transition in the replay.
+    self.replay.record({
+      'observations': observations,
+      'actions': actions,
+      'rewards': rewards,
+      'resets': resets,
+      'terminations': terminations,
+      'next_observations': next_observations,
+    })
+
+    # Record transition in the normalizers.
+    if self.model.observation_normalizer:
+      self.model.observation_normalizer.record(observations)  # type: ignore
+    if self.model.return_normalizer:
+      self.model.return_normalizer.record(rewards)
+    
+    # Record resets in exploration.
+    self.exploration.record(resets)
+
+  @T.override
+  def update(self) -> None:
+    # Skip update if not enough samples collected or rollout not complete.
+    if self.replay.cumulative_samples() < self.warmup_samples: return
+    if self.replay.cumulative_steps() < self.last_update_step + self.rollout_steps: return
+    
+    # Mark this update step.
+    self.last_update_step = self.replay.cumulative_steps()
+
+    # Update both the actor and critic multiple times.
+    for i in range(self.minibatch_iterations):
+      keys = ('observations', 'actions', 'next_observations', 'rewards', 'discounts')
+      minibatch = self.replay.get_minibatch(*keys, size=self.minibatch_samples)
+      # Update the critic first.
+      critic_infos = self.critic_updater(
+        observations=minibatch['observations'],
+        actions=minibatch['actions'],
+        next_observations=minibatch['next_observations'],
+        rewards=minibatch['rewards'],
+        discounts=minibatch['discounts'],
+      )
+      # Update the actor using the new critic (delayed).
+      if (i + 1) % self.delay_iterations == 0:
+        actor_infos = self.actor_updater(
+          observations=minibatch['observations'],
+        )
+        # Update the target networks.
+        self.model.update_targets()
+        # Log actor metrics.
+        for k, v in actor_infos.items():
+          logger.store('actor/' + k, v.numpy(force=True))
+      # Log critic metrics.
+      for k, v in critic_infos.items():
+        logger.store('critic/' + k, v.numpy(force=True))
+
+    # Update the normalizers.
+    if self.model.observation_normalizer:
+      self.model.observation_normalizer.update()
+    if self.model.return_normalizer:
+      self.model.return_normalizer.update()

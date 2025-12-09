@@ -1,6 +1,5 @@
 import typing as T
 
-import numpy as np
 import torch
 
 from tonic import logger
@@ -55,7 +54,7 @@ class DDPG(agent.Agent):
     minibatch_iterations: int = 50,
     # Returns.
     discount_factor: float = 0.99,
-    return_steps: int = 1,
+    return_steps: int = 5,
   ):
     self.model = model or ddpg_default_model()
     self.exploration = exploration or explorations.NormalActionNoise(warmup_samples=warmup_samples)

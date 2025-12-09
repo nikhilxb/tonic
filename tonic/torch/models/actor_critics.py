@@ -172,6 +172,7 @@ class ActorTwinCriticWithTargets(torch.nn.Module):
   ):
     super().__init__()
     self.actor = actor
+    self.critic = critic  # Copy of critic_1 for compatibility with actor updaters.
     self.critic_1 = critic
     self.critic_2 = copy.deepcopy(critic)
     self.target_actor = copy.deepcopy(actor)

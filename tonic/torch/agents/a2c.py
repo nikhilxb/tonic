@@ -43,7 +43,7 @@ class A2CStep(replays.OnPolicyStep):
 # Agent
 
 class A2C(agent.Agent):
-  """Advantage Actor Critic (i.e. Vanilla Policy Gradient). https://arxiv.org/pdf/1602.01783.pdf"""
+  """Advantage Actor Critic. https://arxiv.org/pdf/1602.01783.pdf"""
   model: models.ActorCritic
 
   def __init__(

@@ -1,100 +1,197 @@
+import typing as T
+
 import torch
 
-from tonic import logger  # noqa
-from tonic.torch import agents, updaters
+from tonic import logger
+from tonic.torch import agent, models, replays, updaters
 
 
-class TRPO(agents.A2C):
-    '''Trust Region Policy Optimization.
-    TRPO: https://arxiv.org/pdf/1502.05477.pdf
-    '''
+# ==================================================================================================
+# Model
 
-    def __init__(
-        self, model=None, replay=None, actor_updater=None, critic_updater=None
-    ):
-        actor_updater = actor_updater or updaters.TrustRegionPolicyGradient()
-        super().__init__(
-            model=model, replay=replay, actor_updater=actor_updater,
-            critic_updater=critic_updater)
+def trpo_default_model():
+  return models.ActorCritic(
+    actor=models.Actor(
+      encoder=models.BoxObservationEncoder(),
+      torso=models.MLP((64, 64), torch.nn.Tanh),
+      head=models.DetachedScaleGaussianPolicyHead(),
+    ),
+    critic=models.Critic(
+      encoder=models.BoxObservationEncoder(),
+      torso=models.MLP((64, 64), torch.nn.Tanh),
+      head=models.ValueHead(),
+    ),
+    observation_normalizer=models.MeanStdNormalizer(),
+  )
 
-    def step(self, observations, steps):
-        # Sample actions and get their log-probabilities for training.
-        actions, log_probs, locs, scales = self._step(observations)
-        actions = actions.numpy()
-        log_probs = log_probs.numpy()
-        locs = locs.numpy()
-        scales = scales.numpy()
 
-        # Keep some values for the next update.
-        self.last_observations = observations.copy()
-        self.last_actions = actions.copy()
-        self.last_log_probs = log_probs.copy()
-        self.last_locs = locs.copy()
-        self.last_scales = scales.copy()
+# ==================================================================================================
+# Replay
 
-        return actions
+TRPOKeys = replays.OnPolicyKeys | T.Literal['log_probs', 'locs', 'scales']
 
-    def update(self, observations, rewards, resets, terminations, steps):
-        # Store the last transitions in the replay.
-        self.replay.record(
-            observations=self.last_observations, actions=self.last_actions,
-            next_observations=observations, rewards=rewards, resets=resets,
-            terminations=terminations, log_probs=self.last_log_probs,
-            locs=self.last_locs, scales=self.last_scales)
 
-        # Prepare to update the normalizers.
-        if self.model.observation_normalizer:
-            self.model.observation_normalizer.record(self.last_observations)
-        if self.model.return_normalizer:
-            self.model.return_normalizer.record(rewards)
+class TRPOData(replays.OnPolicyData):
+  log_probs: torch.Tensor
+  locs: torch.Tensor
+  scales: torch.Tensor
 
-        # Update the model if the replay is ready.
-        if self.replay.ready():
-            self._update()
 
-    def _step(self, observations):
-        observations = torch.as_tensor(observations, dtype=torch.float32)
-        with torch.no_grad():
-            distributions = self.model.actor(observations)
-            if hasattr(distributions, 'sample_with_log_prob'):
-                actions, log_probs = distributions.sample_with_log_prob()
-            else:
-                actions = distributions.sample()
-                log_probs = distributions.log_prob(actions)
-            log_probs = log_probs.sum(dim=-1)
-            locs = distributions.loc
-            scales = distributions.stddev
-        return actions, log_probs, locs, scales
+class TRPOStep(replays.OnPolicyStep):
+  log_probs: torch.Tensor
+  locs: torch.Tensor
+  scales: torch.Tensor
 
-    def _update(self):
-        # Compute the lambda-returns.
-        batch = self.replay.get_full('observations', 'next_observations')
-        values, next_values = self._evaluate(**batch)
-        values, next_values = values.numpy(), next_values.numpy()
-        self.replay.compute_returns(values, next_values)
 
-        keys = ('observations', 'actions', 'log_probs', 'locs', 'scales',
-                'advantages')
-        batch = self.replay.get_full(*keys)
-        batch = {k: torch.as_tensor(v) for k, v in batch.items()}
-        infos = self.actor_updater(**batch)
-        for k, v in infos.items():
-            logger.store('actor/' + k, v.numpy())
+# ==================================================================================================
+# Agent
 
-        critic_iterations = 0
-        for batch in self.replay.get_minibatches('observations', 'returns'):
-            batch = {k: torch.as_tensor(v) for k, v in batch.items()}
-            infos = self.critic_updater(**batch)
-            critic_iterations += 1
-            for k, v in infos.items():
-                logger.store('critic/' + k, v.numpy())
-        logger.store('critic/iterations', critic_iterations)
+class TRPO(agent.Agent):
+  """Trust Region Policy Optimization. https://arxiv.org/pdf/1502.05477.pdf"""
+  model: models.ActorCritic
 
-        # Update the normalizers.
-        if self.model.observation_normalizer:
-            self.model.observation_normalizer.update()
-        if self.model.return_normalizer:
-            self.model.return_normalizer.update()
+  def __init__(
+    self,
+    model: models.ActorCritic | None = None,
+    actor_updater: updaters.TrustRegionPolicyGradient | None = None,
+    critic_updater: updaters.VRegression | None = None,
+    # Dataset.
+    rollout_steps: int = 32,
+    minibatch_samples: int = 4096,
+    minibatch_iterations: int = 10,
+    # Returns.
+    discount_factor: float = 0.99,
+    trace_decay: float = 0.97,
+    normalize_advantages: bool = True,
+  ):
+    self.model = model or trpo_default_model()
+    self.actor_updater = actor_updater or updaters.TrustRegionPolicyGradient()
+    self.critic_updater = critic_updater or updaters.VRegression()
+    self.replay = replays.OnPolicyReplay[TRPOKeys, TRPOData, TRPOStep](
+      max_steps=rollout_steps,
+      discount_factor=discount_factor,
+      trace_decay=trace_decay,
+    )
+    self.rollout_steps = rollout_steps
+    self.minibatch_samples = minibatch_samples
+    self.minibatch_iterations = minibatch_iterations
+    self.discount_factor = discount_factor
+    self.trace_decay = trace_decay
+    self.normalize_advantages = normalize_advantages
 
-        # Reset the replay.
-        self.replay.reset()
+  def initialize(
+    self,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
+    seed: int,
+  ) -> None:
+    super().initialize(observation_space, action_space, seed)
+    self.model.initialize(observation_space, action_space)
+    self.replay.initialize(seed)
+    self.actor_updater.initialize(self.model)
+    self.critic_updater.initialize(self.model)
+
+  @T.override
+  def step(self, observations: agent.Observation) -> agent.Action:
+    # Sample actions and get their log-probabilities and distribution params for training.
+    with torch.no_grad():
+      distributions = self.model.actor(observations)
+      if hasattr(distributions, 'sample_with_log_prob'):
+        actions, log_probs = distributions.sample_with_log_prob()
+      else:
+        actions = distributions.sample()
+        log_probs = distributions.log_prob(actions)
+      log_probs = log_probs.sum(dim=-1)
+      locs = distributions.loc
+      scales = distributions.stddev
+    
+    # Keep values for the next record.
+    self.log_probs = log_probs
+    self.locs = locs
+    self.scales = scales
+
+    return actions
+
+  @T.override
+  def test_step(self, observations: agent.Observation) -> agent.Action:
+    # Sample actions for testing.
+    with torch.no_grad():
+      return self.model.actor(observations).sample()
+    
+  @T.override
+  def record(
+    self,
+    observations: agent.Observation,
+    actions: agent.Action,
+    rewards: torch.Tensor,
+    resets: torch.Tensor,
+    terminations: torch.Tensor,
+    next_observations: agent.Observation,
+  ) -> None:
+    # Record transition in the replay.
+    self.replay.record({
+      'observations': observations,
+      'actions': actions,
+      'rewards': rewards,
+      'resets': resets,
+      'terminations': terminations,
+      'next_observations': next_observations,
+      'log_probs': self.log_probs,
+      'locs': self.locs,
+      'scales': self.scales,
+    })
+
+    # Record transition in the normalizers.
+    if self.model.observation_normalizer:
+      self.model.observation_normalizer.record(observations)  # type: ignore
+    if self.model.return_normalizer:
+      self.model.return_normalizer.record(rewards)
+
+  @T.override
+  def update(self) -> None:
+    # Skip update if replay is not full.
+    if not self.replay.is_full(): return
+
+    # Compute the lambda-returns over the full buffer.
+    full = self.replay.get_full('observations', 'next_observations')
+    with torch.no_grad():
+      values = self.model.critic(full['observations'])
+      next_values = self.model.critic(full['next_observations'])
+    self.replay.compute_returns(values, next_values)
+    self.replay.compute_advantages(normalize=self.normalize_advantages)
+
+    # Update the actor once with the full batch.
+    keys = ('observations', 'actions', 'log_probs', 'locs', 'scales', 'advantages')
+    full = self.replay.get_full(*keys)
+    actor_infos = self.actor_updater(
+      observations=full['observations'],
+      actions=full['actions'],
+      log_probs=full['log_probs'],
+      locs=full['locs'],
+      scales=full['scales'],
+      advantages=full['advantages'],
+    )
+    # Log actor metrics.
+    for k, v in actor_infos.items():
+      logger.store('actor/' + k, v.numpy(force=True))
+
+    # Update the critic multiple times with minibatches.
+    keys = ('observations', 'returns')
+    for i in range(self.minibatch_iterations):
+      for minibatch in self.replay.get_minibatches(*keys, size=self.minibatch_samples):
+        critic_infos = self.critic_updater(
+          observations=minibatch['observations'],
+          returns=minibatch['returns'],
+        )
+        # Log critic metrics.
+        for k, v in critic_infos.items():
+          logger.store('critic/' + k, v.numpy(force=True))
+
+    # Reset the replay for the next rollout.
+    self.replay.reset()
+
+    # Update the normalizers.
+    if self.model.observation_normalizer:
+      self.model.observation_normalizer.update()
+    if self.model.return_normalizer:
+      self.model.return_normalizer.update()

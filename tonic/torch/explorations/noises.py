@@ -5,7 +5,7 @@ import typing as T
 import gym.spaces
 import torch
 
-from tonic.torch import agent, utils
+from .. import agent, utils
 
 
 class RandomPolicy:
