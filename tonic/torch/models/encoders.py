@@ -27,7 +27,7 @@ class ObservationEncoder(torch.nn.Module):
     """
     Args:
       observation_space: Observation space.
-      action_space: Action space (unused).
+      action_space: Action space.
       observation_normalizer: Observation normalizer, optional.
       
     Returns:
@@ -37,6 +37,7 @@ class ObservationEncoder(torch.nn.Module):
     
     if isinstance(observation_space, gym.spaces.Box):
       assert len(observation_space.shape) == 1, 'Observation must be 1D.'
+      assert self.observation_prefix == '', 'Prefix cannot be used with `Box` observation space.'
       self.observation_space = None
       observation_size = observation_space.shape[0]
     elif isinstance(observation_space, gym.spaces.Dict):
@@ -115,6 +116,7 @@ class ObservationActionEncoder(torch.nn.Module):
     # Validate observation space.
     if isinstance(observation_space, gym.spaces.Box):
       assert len(observation_space.shape) == 1, 'Observation must be 1D.'
+      assert self.observation_prefix == '', 'Prefix cannot be used with `Box` observation space.'
       self.observation_space = None
       observation_size = observation_space.shape[0]
     elif isinstance(observation_space, gym.spaces.Dict):
@@ -151,10 +153,11 @@ class ObservationActionEncoder(torch.nn.Module):
   def forward(self, *inputs) -> torch.Tensor:
     """
     Args:
-      inputs: Box observations and actions `[batch, ...]` or Dict observations and actions `{key: [batch, ...]}`.
+      observations: Observations `[batch, observation_size]`.
+      actions: Actions `[batch, action_size]`.
       
     Returns:
-      Normalized concatenated tensor `[batch, observation_size + action_size]`.
+      Normalized and concatenated observations-actions `[batch, observation_size + action_size]`.
     """
     observations, actions = inputs
     
