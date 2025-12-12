@@ -3,7 +3,7 @@ import typing as T
 import torch
 import gym.spaces
 
-from .. import agent, utils
+from .. import agent, space
 from . import normalizers
 
 
@@ -138,7 +138,7 @@ class DictObservationEncoder(torch.nn.Module):
     self.observation_space = gym.spaces.Dict({
       k: v for k, v in observation_space.spaces.items() if k.startswith(self.observation_prefix)
     })
-    observation_space_box = utils.pack_space(self.observation_space)
+    observation_space_box = space.pack_space(self.observation_space)
     observation_size = observation_space_box.shape[0]
     return observation_size
 
@@ -162,7 +162,7 @@ class DictObservationEncoder(torch.nn.Module):
     }
     if self.observation_normalizer:
       observations = self.observation_normalizer(observations)  # {key: [batch, ...]}
-    observations_box = utils.pack_tensors(self.observation_space, observations)  # [batch, obs]
+    observations_box = space.pack_tensors(self.observation_space, observations)  # [batch, obs]
     return observations_box
 
 
@@ -201,8 +201,8 @@ class DictObservationActionEncoder(torch.nn.Module):
       k: v for k, v in observation_space.spaces.items() if k.startswith(self.observation_prefix)
     })
     self.action_space = action_space
-    observation_space_box = utils.pack_space(self.observation_space)
-    action_space_box = utils.pack_space(self.action_space)
+    observation_space_box = space.pack_space(self.observation_space)
+    action_space_box = space.pack_space(self.action_space)
     observation_size = observation_space_box.shape[0]
     action_size = action_space_box.shape[0]
     return observation_size + action_size
@@ -232,6 +232,6 @@ class DictObservationActionEncoder(torch.nn.Module):
     }
     if self.observation_normalizer:
       observations = self.observation_normalizer(observations)  # {key: [batch, ...]}
-    observations_box = utils.pack_tensors(self.observation_space, observations)  # [batch, obs]
-    actions_box = utils.pack_tensors(self.action_space, actions)  # [batch, act]
+    observations_box = space.pack_tensors(self.observation_space, observations)  # [batch, obs]
+    actions_box = space.pack_tensors(self.action_space, actions)  # [batch, act]
     return torch.cat([observations_box, actions_box], dim=-1)  # [batch, obs + act]

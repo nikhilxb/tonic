@@ -14,7 +14,7 @@ def mpo_default_model():
     actor=models.Actor(
       encoder=models.BoxObservationEncoder(),
       torso=models.MLP((256, 256), torch.nn.ReLU),
-      head=models.GaussianPolicyHead(),
+      head=models.StochasticPolicyHead(),
     ),
     critic=models.Critic(
       encoder=models.BoxObservationActionEncoder(),
@@ -89,13 +89,17 @@ class MPO(agent.Agent):
   def step(self, observations: agent.Observation) -> agent.Action:
     # Sample actions for training.
     with torch.no_grad():
-      return self.model.actor(observations).sample()
+      distributions: models.ActionDistribution = self.model.actor(observations)
+      actions = distributions.sample()
+    return actions
 
   @T.override
   def test_step(self, observations: agent.Observation) -> agent.Action:
     # Use mean actions for testing.
     with torch.no_grad():
-      return self.model.actor(observations).loc
+      distributions: models.ActionDistribution = self.model.actor(observations)
+      actions = distributions.mean()
+    return actions
     
   @T.override
   def record(

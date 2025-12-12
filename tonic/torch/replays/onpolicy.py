@@ -42,8 +42,8 @@ class OnPolicyStep(T.TypedDict):
 
 
 Keys = T.TypeVar('Keys', bound=T.LiteralString)
-Data = T.TypeVar('Data', bound=OnPolicyData)
-Step = T.TypeVar('Step', bound=OnPolicyStep)
+Data = T.TypeVar('Data', bound=T.Mapping[str, T.Any])
+Step = T.TypeVar('Step', bound=T.Mapping[str, T.Any])
 
 
 class OnPolicyReplay(T.Generic[Keys, Data, Step]):

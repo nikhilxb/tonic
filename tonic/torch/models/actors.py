@@ -5,36 +5,222 @@ import torch
 import gym.spaces
 
 
-from .. import utils
+from .. import agent, space
 from . import normalizers
 
 
 FLOAT_EPSILON = 1e-8
 
+# ==================================================================================================
+# Distributions
 
-class SquashedMultivariateNormalDiag(torch.distributions.Distribution):
-  """Tanh-squashed multivariate normal distribution for bounded action spaces (SAC)."""
+Params = T.TypeVarTuple('Params')
 
-  def __init__(self, loc: float | torch.Tensor, scale: float | torch.Tensor):
-    """Initialize the squashed normal distribution.
+class ActionDistribution(T.Protocol[T.Unpack[Params]]):
+  """Protocol for action distributions that handle Box or Dict action spaces."""
+  action_space: agent.ActionSpace
+  
+  def __init__(self, action_space: agent.ActionSpace, *params: T.Unpack[Params]):
+    ...
+  
+  def sample(self, shape: tuple[int, ...] = ()) -> agent.Action:
+    ...
+
+  def sample_with_log_prob(self, shape: tuple[int, ...] = ()) -> tuple[agent.Action, torch.Tensor]:
+    ...
+
+  def rsample(self, shape: tuple[int, ...] = ()) -> agent.Action:
+    ...
+
+  def rsample_with_log_prob(self, shape: tuple[int, ...] = ()) -> tuple[agent.Action, torch.Tensor]:
+    ...
+
+  def log_prob(self, samples: agent.Action) -> torch.Tensor:
+    ...
+
+  def mean(self) -> agent.Action:
+    ...
+
+  def std(self) -> torch.Tensor:
+    ...
+
+  def entropy(self) -> torch.Tensor:
+    ...
+
+
+class NormalActionDistribution:
+  """Normal distribution for action spaces (Box or Dict)."""
+
+  def __init__(self, action_space: agent.ActionSpace, mean: torch.Tensor, std: torch.Tensor):
+    """Initialize the normal distribution.
     
     Args:
-      loc: Mean of the pre-squash normal distribution [batch_size, action_dim].
-      scale: Standard deviation of the pre-squash normal [batch_size, action_dim].
+      action_space: Action space for unpacking actions.
+      mean: Mean of the normal distribution [batch_size, action_dim].
+      std: Standard deviation of the normal [batch_size, action_dim].
     """
-    self._distribution = torch.distributions.normal.Normal(loc, scale)
+    self.action_space = action_space
+    self.distribution = torch.distributions.normal.Normal(mean, std)
 
-  def rsample_with_log_prob(
-    self,
-    shape: tuple[int, ...] = (),
-  ) -> tuple[torch.Tensor, torch.Tensor]:
+  def sample(self, shape: tuple[int, ...] = ()) -> agent.Action:
+    """Sample without reparameterization (no gradients).
+    
+    Args:
+      shape: Additional sample dimensions to prepend.
+      
+    Returns:
+      Samples [*shape, batch_size, action_dim] or dict of tensors.
+    """
+    samples = self.distribution.sample(shape)  # [*shape, batch_size, action_dim]
+    return space.unpack_tensors(self.action_space, samples)
+
+  def sample_with_log_prob(self, shape: tuple[int, ...] = ()) -> tuple[agent.Action, torch.Tensor]:
+    """Sample without reparameterization and compute log probability.
+    
+    Args:
+      shape: Additional sample dimensions to prepend.
+      
+    Returns:
+      Tuple of (samples [*shape, batch_size, action_dim] or dict,
+                log probabilities [*shape, batch_size, action_dim]).
+    """
+    samples = self.distribution.sample(shape)  # [*shape, batch_size, action_dim]
+    log_probs = self.distribution.log_prob(samples)  # [*shape, batch_size, action_dim]
+    samples = space.unpack_tensors(self.action_space, samples)
+    return samples, log_probs
+
+  def rsample(self, shape: tuple[int, ...] = ()) -> agent.Action:
+    """Sample with reparameterization (for gradient estimation).
+    
+    Args:
+      shape: Additional sample dimensions to prepend.
+      
+    Returns:
+      Samples [*shape, batch_size, action_dim] or dict of tensors.
+    """
+    samples = self.distribution.rsample(shape)  # [*shape, batch_size, action_dim]
+    return space.unpack_tensors(self.action_space, samples)
+
+  def rsample_with_log_prob(self, shape: tuple[int, ...] = ()) -> tuple[agent.Action, torch.Tensor]:
     """Sample with reparameterization and compute log probability.
     
     Args:
       shape: Additional sample dimensions to prepend.
       
     Returns:
-      Tuple of (squashed samples [*shape, batch_size, action_dim],
+      Tuple of (samples [*shape, batch_size, action_dim] or dict,
+                log probabilities [*shape, batch_size, action_dim]).
+    """
+    samples = self.distribution.rsample(shape)  # [*shape, batch_size, action_dim]
+    log_probs = self.distribution.log_prob(samples)  # [*shape, batch_size, action_dim]
+    samples = space.unpack_tensors(self.action_space, samples)
+    return samples, log_probs
+
+  def log_prob(self, samples: agent.Action) -> torch.Tensor:
+    """Compute log probability of samples.
+    
+    Args:
+      samples: Samples [batch_size, action_dim] or dict of tensors.
+      
+    Returns:
+      Log probabilities [batch_size, action_dim].
+    """
+    if isinstance(samples, dict):
+      samples = space.pack_tensors(self.action_space, samples)
+    return self.distribution.log_prob(samples)  # [batch_size, action_dim]
+
+  def mean(self) -> agent.Action:
+    """Mean of the distribution.
+    
+    Returns:
+      Mean [batch_size, action_dim] or dict of tensors.
+    """
+    mean = self.distribution.mean  # [batch_size, action_dim]
+    return space.unpack_tensors(self.action_space, mean)
+  
+  def std(self) -> torch.Tensor:
+    """Standard deviation of the distribution.
+    
+    Returns:
+      Standard deviation [batch_size, action_dim].
+    """
+    return self.distribution.stddev  # [batch_size, action_dim]
+  
+  def entropy(self) -> torch.Tensor:
+    """Entropy of the distribution.
+    
+    Returns:
+      Entropy [batch_size, action_dim].
+    """
+    return self.distribution.entropy()  # [batch_size, action_dim]
+
+
+class SquashedNormalActionDistribution:
+  """Tanh-squashed normal distribution for bounded action spaces (SAC)."""
+
+  def __init__(self, action_space: agent.ActionSpace, mean: torch.Tensor, std: torch.Tensor):
+    """Initialize the squashed normal distribution.
+    
+    Args:
+      action_space: Action space for unpacking actions.
+      mean: Mean of the pre-squash normal distribution [batch_size, action_dim].
+      std: Standard deviation of the pre-squash normal [batch_size, action_dim].
+    """
+    self.action_space = action_space
+    self._distribution = torch.distributions.normal.Normal(mean, std)
+
+  def sample(self, shape: tuple[int, ...] = ()) -> agent.Action:
+    """Sample without reparameterization (no gradients).
+    
+    Args:
+      shape: Additional sample dimensions to prepend.
+      
+    Returns:
+      Squashed samples [*shape, batch_size, action_dim] or dict of tensors.
+    """
+    samples = self._distribution.sample(shape)  # [*shape, batch_size, action_dim]
+    squashed_samples = torch.tanh(samples)  # [*shape, batch_size, action_dim]
+    return space.unpack_tensors(self.action_space, squashed_samples)
+
+  def sample_with_log_prob(self, shape: tuple[int, ...] = ()) -> tuple[agent.Action, torch.Tensor]:
+    """Sample without reparameterization and compute log probability.
+    
+    Args:
+      shape: Additional sample dimensions to prepend.
+      
+    Returns:
+      Tuple of (squashed samples [*shape, batch_size, action_dim] or dict,
+                log probabilities [*shape, batch_size, action_dim]).
+    """
+    samples = self._distribution.sample(shape)  # [*shape, batch_size, action_dim]
+    squashed_samples = torch.tanh(samples)  # [*shape, batch_size, action_dim]
+    log_probs = self._distribution.log_prob(samples)  # [*shape, batch_size, action_dim]
+    # Jacobian correction for tanh transformation.
+    log_probs -= torch.log(1 - squashed_samples ** 2 + 1e-6)  # [*shape, batch_size, action_dim]
+    squashed_samples = space.unpack_tensors(self.action_space, squashed_samples)
+    return squashed_samples, log_probs
+
+  def rsample(self, shape: tuple[int, ...] = ()) -> agent.Action:
+    """Sample with reparameterization (for gradient estimation).
+    
+    Args:
+      shape: Additional sample dimensions to prepend.
+      
+    Returns:
+      Squashed samples [*shape, batch_size, action_dim] or dict of tensors.
+    """
+    samples = self._distribution.rsample(shape)  # [*shape, batch_size, action_dim]
+    squashed_samples = torch.tanh(samples)  # [*shape, batch_size, action_dim]
+    return space.unpack_tensors(self.action_space, squashed_samples)
+
+  def rsample_with_log_prob(self, shape: tuple[int, ...] = ()) -> tuple[agent.Action, torch.Tensor]:
+    """Sample with reparameterization and compute log probability.
+    
+    Args:
+      shape: Additional sample dimensions to prepend.
+      
+    Returns:
+      Tuple of (squashed samples [*shape, batch_size, action_dim] or dict,
                 log probabilities [*shape, batch_size, action_dim]).
     """
     samples = self._distribution.rsample(shape)  # [*shape, batch_size, action_dim]
@@ -42,187 +228,179 @@ class SquashedMultivariateNormalDiag(torch.distributions.Distribution):
     log_probs = self._distribution.log_prob(samples)  # [*shape, batch_size, action_dim]
     # Jacobian correction for tanh transformation.
     log_probs -= torch.log(1 - squashed_samples ** 2 + 1e-6)  # [*shape, batch_size, action_dim]
+    squashed_samples = space.unpack_tensors(self.action_space, squashed_samples)
     return squashed_samples, log_probs
 
-  def rsample(self, shape: tuple[int, ...] = ()) -> torch.Tensor:
-    """Sample with reparameterization (for gradient estimation).
-    
-    Args:
-      shape: Additional sample dimensions to prepend.
-      
-    Returns:
-      Squashed samples [*shape, batch_size, action_dim].
-    """
-    samples = self._distribution.rsample(shape)  # [*shape, batch_size, action_dim]
-    return torch.tanh(samples)  # [*shape, batch_size, action_dim]
-
-  def sample(self, shape: tuple[int, ...] = ()) -> torch.Tensor:
-    """Sample without reparameterization (no gradients).
-    
-    Args:
-      shape: Additional sample dimensions to prepend.
-      
-    Returns:
-      Squashed samples [*shape, batch_size, action_dim].
-    """
-    samples = self._distribution.sample(shape)  # [*shape, batch_size, action_dim]
-    return torch.tanh(samples)  # [*shape, batch_size, action_dim]
-
-  def log_prob(self, samples: torch.Tensor):
-    """Not implemented - unsquashing introduces approximation errors."""
+  def log_prob(self, samples: agent.Action) -> torch.Tensor:
+    """Not implemented, since unsquashed samples cannot be accurately recovered."""
     raise NotImplementedError(
       'Unsquashed samples cannot be accurately recovered. Use `rsample_with_log_prob` directly.'
     )
 
-  @property
-  def loc(self) -> torch.Tensor:
+  def mean(self) -> agent.Action:
     """Mean of the squashed distribution.
     
     Returns:
-      Squashed mean [batch_size, action_dim].
+      Squashed mean [batch_size, action_dim] or dict of tensors.
     """
-    return torch.tanh(self._distribution.mean)  # [batch_size, action_dim]
+    mean = torch.tanh(self._distribution.mean)  # [batch_size, action_dim]
+    return space.unpack_tensors(self.action_space, mean)
+  
+  def std(self) -> torch.Tensor:
+    """Not implemented, since standard deviation is not defined for squashed distributions."""
+    raise NotImplementedError('Standard deviation is not defined for squashed distributions.')
+  
+  def entropy(self) -> torch.Tensor:
+    """Not implemented, since entropy is not defined for squashed distributions."""
+    raise NotImplementedError('Entropy is not defined for squashed distributions.')
+  
 
+# ==================================================================================================
+# Heads
 
-class DetachedScaleGaussianPolicyHead(torch.nn.Module):
-  """Gaussian policy with learnable mean and fixed (detached) scale per action dimension."""
+class StochasticDetachedStdPolicyHead(torch.nn.Module):
+  """Stochastic policy with input-dependent mean (network) and input-independent standard deviation
+  (vector). Each action dimension has its own independent mean and standard deviation."""
 
   def __init__(
     self,
-    loc_activation: T.Callable[[], torch.nn.Module] = torch.nn.Tanh,
-    loc_fn: T.Callable[[torch.nn.Module], None] | None = None,
-    log_scale_init: float = 0.,
-    scale_min: float = 1e-4,
-    scale_max: float = 1.,
-    distribution: T.Type[torch.distributions.normal.Normal] = torch.distributions.normal.Normal,
+    mean_activation: T.Callable[[], torch.nn.Module] = torch.nn.Tanh,
+    mean_init_fn: T.Callable[[torch.nn.Module], None] | None = None,
+    std_log_init: float = 0.,
+    std_min: float = 1e-4,
+    std_max: float = 1.,
+    distribution: T.Type[ActionDistribution[torch.Tensor, torch.Tensor]] = NormalActionDistribution,
   ):
     """Initialize the policy head.
     
     Args:
-      loc_activation: Activation function for the mean layer (e.g., Tanh for bounded actions).
-      loc_fn: Optional initialization function for the mean layer.
-      log_scale_init: Initial value for log(scale) parameter.
-      scale_min: Minimum allowed scale (for numerical stability).
-      scale_max: Maximum allowed scale.
-      distribution: Distribution class to use (Normal or SquashedMultivariateNormalDiag).
+      mean_activation: Activation function for the mean layer (e.g., Tanh for bounded actions).
+      mean_init_fn: Optional initialization function for the mean layer.
+      std_log_init: Initial value for log(std) parameter.
+      std_min: Minimum allowed std (for numerical stability).
+      std_max: Maximum allowed std.
+      distribution: Action distribution constructor (e.g. `Normal` or `SquashedNormal`).
     """
     super().__init__()
-    self.loc_activation = loc_activation
-    self.loc_fn = loc_fn
-    self.log_scale_init = log_scale_init
-    self.scale_min = scale_min
-    self.scale_max = scale_max
+    self.mean_activation = mean_activation
+    self.mean_init_fn = mean_init_fn
+    self.std_log_init = std_log_init
+    self.std_min = std_min
+    self.std_max = std_max
     self.distribution = distribution
 
-  def initialize(self, input_size: int, action_space: gym.spaces.Box | gym.spaces.Dict) -> None:
+  def initialize(self, input_size: int, action_space: agent.ActionSpace) -> None:
     """Initialize layers.
     
     Args:
       input_size: Dimension of input features.
       action_space: `Box` or `Dict` action space.
     """
+    self.action_space = action_space
     if isinstance(action_space, gym.spaces.Dict):
-      raise NotImplementedError('Dict action spaces not yet supported for Gaussian policies')
+      action_space = space.pack_space(action_space)
     assert action_space.shape is not None
     action_size = math.prod(action_space.shape)
-    self.loc_layer = torch.nn.Sequential(
+    self.mean_layer = torch.nn.Sequential(
       torch.nn.Linear(input_size, action_size),
-      self.loc_activation(),
+      self.mean_activation(),
     )
-    if self.loc_fn:
-      self.loc_layer.apply(self.loc_fn)
-    # Scale is a learnable parameter, same for all batch elements.
-    self.log_scale = torch.nn.Parameter(
-      torch.as_tensor([[self.log_scale_init] * action_size], dtype=torch.float32)
+    if self.mean_init_fn:
+      self.mean_layer.apply(self.mean_init_fn)
+    # Std is a learnable parameter, same for all batch elements.
+    self.std_log = torch.nn.Parameter(
+      torch.as_tensor([[self.std_log_init] * action_size], dtype=torch.float32)
     )  # [1, action_size]
 
-  def forward(self, inputs: torch.Tensor) -> torch.distributions.Distribution:
+  def forward(self, inputs: torch.Tensor) -> ActionDistribution:
     """Compute action distribution.
     
     Args:
       inputs: Input features [batch_size, input_size].
       
     Returns:
-      Action distribution with mean [batch_size, action_size] and scale [batch_size, action_size].
+      Action distribution with mean [batch_size, action_size] and std [batch_size, action_size].
     """
-    loc = self.loc_layer(inputs)  # [batch_size, action_size]
     batch_size = inputs.shape[0]
-    scale = torch.nn.functional.softplus(self.log_scale) + FLOAT_EPSILON  # [1, action_size]
-    scale = torch.clamp(scale, self.scale_min, self.scale_max)  # [1, action_size]
-    scale = scale.repeat(batch_size, 1)  # [batch_size, action_size]
-    return self.distribution(loc, scale)
+    mean = self.mean_layer(inputs)  # [batch_size, action_size]
+    std = torch.nn.functional.softplus(self.std_log) + FLOAT_EPSILON  # [1, action_size]
+    std = torch.clamp(std, self.std_min, self.std_max)  # [1, action_size]
+    std = std.repeat(batch_size, 1)  # [batch_size, action_size]
+    return self.distribution(self.action_space, mean, std)
 
 
-class GaussianPolicyHead(torch.nn.Module):
-  """Gaussian policy with learnable mean and scale (both state-dependent)."""
+class StochasticPolicyHead(torch.nn.Module):
+  """Stochastic policy with input-dependent mean and standard deviation (both networks). Each action
+  dimension has its own independent mean and standard deviation."""
 
   def __init__(
     self,
-    loc_activation: T.Callable[[], torch.nn.Module] = torch.nn.Tanh,
-    loc_fn: T.Callable[[torch.nn.Module], None] | None = None,
-    scale_activation: T.Callable[[], torch.nn.Module] = torch.nn.Softplus,
-    scale_min: float = 1e-4,
-    scale_max: float = 1,
-    scale_fn: T.Callable[[torch.nn.Module], None] | None = None,
-    distribution: T.Type[torch.distributions.normal.Normal] | T.Type[SquashedMultivariateNormalDiag] = torch.distributions.normal.Normal,
+    mean_activation: T.Callable[[], torch.nn.Module] = torch.nn.Tanh,
+    mean_init_fn: T.Callable[[torch.nn.Module], None] | None = None,
+    std_activation: T.Callable[[], torch.nn.Module] = torch.nn.Softplus,
+    std_min: float = 1e-4,
+    std_max: float = 1,
+    std_init_fn: T.Callable[[torch.nn.Module], None] | None = None,
+    distribution: T.Type[ActionDistribution[torch.Tensor, torch.Tensor]] = NormalActionDistribution,
   ):
     """Initialize the policy head.
     
     Args:
-      loc_activation: Activation function for the mean layer.
-      loc_fn: Optional initialization function for the mean layer.
-      scale_activation: Activation function for the scale layer (e.g., Softplus for positivity).
-      scale_min: Minimum allowed scale (for numerical stability).
-      scale_max: Maximum allowed scale.
-      scale_fn: Optional initialization function for the scale layer.
-      distribution: Distribution class to use (Normal or SquashedMultivariateNormalDiag).
+      mean_activation: Activation function for the mean layer.
+      mean_init_fn: Optional initialization function for the mean layer.
+      std_activation: Activation function for the std layer (e.g., `Softplus` for positivity).
+      std_min: Minimum allowed std (for numerical stability).
+      std_max: Maximum allowed std.
+      std_init_fn: Optional initialization function for the std layer.
+      distribution: Action distribution constructor (e.g. `Normal` or `SquashedNormal`).
     """
     super().__init__()
-    self.loc_activation = loc_activation
-    self.loc_fn = loc_fn
-    self.scale_activation = scale_activation
-    self.scale_min = scale_min
-    self.scale_max = scale_max
-    self.scale_fn = scale_fn
+    self.mean_activation = mean_activation
+    self.mean_init_fn = mean_init_fn
+    self.std_activation = std_activation
+    self.std_min = std_min
+    self.std_max = std_max
+    self.std_init_fn = std_init_fn
     self.distribution = distribution
 
-  def initialize(self, input_size: int, action_space: gym.spaces.Box | gym.spaces.Dict) -> None:
+  def initialize(self, input_size: int, action_space: agent.ActionSpace) -> None:
     """Initialize layers.
     
     Args:
       input_size: Dimension of input features.
       action_space: `Box` or `Dict` action space.
     """
+    self.action_space = action_space
     if isinstance(action_space, gym.spaces.Dict):
-      raise NotImplementedError('Dict action spaces not yet supported for Gaussian policies')
+      action_space = space.pack_space(action_space)
     assert action_space.shape is not None
     action_size = math.prod(action_space.shape)
-    self.loc_layer = torch.nn.Sequential(
+    self.mean_layer = torch.nn.Sequential(
       torch.nn.Linear(input_size, action_size),
-      self.loc_activation(),
+      self.mean_activation(),
     )
-    if self.loc_fn:
-      self.loc_layer.apply(self.loc_fn)
-    self.scale_layer = torch.nn.Sequential(
+    if self.mean_init_fn:
+      self.mean_layer.apply(self.mean_init_fn)
+    self.std_layer = torch.nn.Sequential(
       torch.nn.Linear(input_size, action_size),
-      self.scale_activation(),
+      self.std_activation(),
     )
-    if self.scale_fn:
-      self.scale_layer.apply(self.scale_fn)
+    if self.std_init_fn:
+      self.std_layer.apply(self.std_init_fn)
 
-  def forward(self, inputs: torch.Tensor) -> torch.distributions.Distribution:
+  def forward(self, inputs: torch.Tensor) -> ActionDistribution:
     """Compute action distribution.
     
     Args:
       inputs: Input features [batch_size, input_size].
       
     Returns:
-      Action distribution with mean and scale [batch_size, action_size].
+      Action distribution with mean and std [batch_size, action_size].
     """
-    loc = self.loc_layer(inputs)  # [batch_size, action_size]
-    scale = self.scale_layer(inputs)  # [batch_size, action_size]
-    scale = torch.clamp(scale, self.scale_min, self.scale_max)  # [batch_size, action_size]
-    return self.distribution(loc, scale)
+    mean = self.mean_layer(inputs)  # [batch_size, action_size]
+    std = self.std_layer(inputs)  # [batch_size, action_size]
+    std = torch.clamp(std, self.std_min, self.std_max)  # [batch_size, action_size]
+    return self.distribution(self.action_space, mean, std)
 
 
 class DeterministicPolicyHead(torch.nn.Module):
@@ -232,21 +410,21 @@ class DeterministicPolicyHead(torch.nn.Module):
     self,
     activation: T.Callable[[], torch.nn.Module] = torch.nn.Tanh,
     bias: bool = True,
-    fn: T.Callable[[torch.nn.Module], None] | None = None,
+    init_fn: T.Callable[[torch.nn.Module], None] | None = None,
   ):
     """Initialize the policy head.
     
     Args:
       activation: Activation function for the action layer (e.g., Tanh for bounded actions).
       bias: Whether to use bias in the linear layer.
-      fn: Optional initialization function for the layer.
+      init_fn: Optional initialization function for the layer.
     """
     super().__init__()
     self.activation = activation
     self.bias = bias
-    self.fn = fn
+    self.init_fn = init_fn
 
-  def initialize(self, input_size: int, action_space: gym.spaces.Box | gym.spaces.Dict) -> None:
+  def initialize(self, input_size: int, action_space: agent.ActionSpace) -> None:
     """Initialize the action layer.
     
     Args:
@@ -255,16 +433,16 @@ class DeterministicPolicyHead(torch.nn.Module):
     """
     self.action_space = action_space
     if isinstance(action_space, gym.spaces.Dict):
-      action_space = utils.pack_space(action_space)
+      action_space = space.pack_space(action_space)
     action_size = math.prod(action_space.shape)
     self.action_layer = torch.nn.Sequential(
       torch.nn.Linear(input_size, action_size, bias=self.bias),
       self.activation(),
     )
-    if self.fn:
-      self.action_layer.apply(self.fn)
+    if self.init_fn:
+      self.action_layer.apply(self.init_fn)
 
-  def forward(self, inputs: torch.Tensor) -> torch.Tensor | dict[str, torch.Tensor]:
+  def forward(self, inputs: torch.Tensor) -> agent.Action:
     """Compute deterministic action.
     
     Args:
@@ -275,7 +453,7 @@ class DeterministicPolicyHead(torch.nn.Module):
     """
     actions = self.action_layer(inputs)  # [batch_size, action_size]
     # Reshape box actions. Unpack and reshape dict actions.
-    actions = utils.unpack_tensors(self.action_space, actions)
+    actions = space.unpack_tensors(self.action_space, actions)
     return actions
 
 
@@ -285,8 +463,8 @@ class DeterministicPolicyHead(torch.nn.Module):
 class ActorEncoder(T.Protocol):
   def initialize(
     self,
-    observation_space: gym.spaces.Box | gym.spaces.Dict,
-    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
     observation_normalizer: normalizers.ObservationNormalizer | None = None,
   ) -> int:
     ...
@@ -323,8 +501,8 @@ class ActorHead(T.Protocol):
 class ActorLike(T.Protocol):
   def initialize(
     self,
-    observation_space: gym.spaces.Box | gym.spaces.Dict,
-    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
     observation_normalizer: normalizers.ObservationNormalizer | None = None,
   ) -> None:
     ...
@@ -355,8 +533,8 @@ class Actor(torch.nn.Module):
 
   def initialize(
     self,
-    observation_space: gym.spaces.Box | gym.spaces.Dict,
-    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
     observation_normalizer: normalizers.ObservationNormalizer | None = None,
   ) -> None:
     size = self.encoder.initialize(observation_space, action_space, observation_normalizer)

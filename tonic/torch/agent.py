@@ -24,6 +24,8 @@ class Agent(abc.ABC):
     action_space: ActionSpace,
     seed: int,
   ) -> None:
+    self.observation_space = observation_space
+    self.action_space = action_space
     np.random.seed(seed)
     random.seed(seed)
     torch.manual_seed(seed)

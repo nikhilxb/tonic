@@ -3,51 +3,14 @@ import typing as T
 import torch
 import gym.spaces
 
+from .. import agent
 from . import normalizers
 
 
-class ValueHead(torch.nn.Module):
-  """Value function head that outputs a scalar value estimate."""
+# ==================================================================================================
+# Distributions
 
-  def __init__(
-    self,
-    fn: T.Callable[[torch.nn.Module], None] | None = None,
-  ):
-    """Initialize the value head.
-    
-    Args:
-      fn: Optional initialization function to apply to the layer.
-    """
-    super().__init__()
-    self.fn = fn
-
-  def initialize(
-    self,
-    input_size: int,
-    return_normalizer: normalizers.ReturnNormalizer | None = None,
-  ) -> None:
-    self.return_normalizer = return_normalizer
-    self.v_layer = torch.nn.Linear(input_size, 1)
-    if self.fn:
-      self.v_layer.apply(self.fn)
-
-  def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-    """Compute value estimate.
-    
-    Args:
-      inputs: Input features [batch_size, input_size].
-      
-    Returns:
-      Value estimates [batch_size].
-    """
-    out = self.v_layer(inputs)  # [batch_size, 1]
-    out = torch.squeeze(out, -1)  # [batch_size]
-    if self.return_normalizer:
-      out = self.return_normalizer(out)  # [batch_size]
-    return out
-
-
-class CategoricalWithSupport:
+class CategoricalValueDistribution:
   """Categorical distribution with explicit value support for distributional RL."""
 
   def __init__(self, values: torch.Tensor, logits: torch.Tensor):
@@ -100,15 +63,59 @@ class CategoricalWithSupport:
     return (delta_clipped * self.probabilities[:, None]).sum(dim=2)  # [batch_size, num_atoms]
 
 
+# ==================================================================================================
+# Heads
+
+class ValueHead(torch.nn.Module):
+  """Value function head that outputs a scalar value estimate."""
+
+  def __init__(
+    self,
+    init_fn: T.Callable[[torch.nn.Module], None] | None = None,
+  ):
+    """Initialize the value head.
+    
+    Args:
+      init_fn: Optional initialization function to apply to the layer.
+    """
+    super().__init__()
+    self.init_fn = init_fn
+
+  def initialize(
+    self,
+    input_size: int,
+    return_normalizer: normalizers.ReturnNormalizer | None = None,
+  ) -> None:
+    self.return_normalizer = return_normalizer
+    self.v_layer = torch.nn.Linear(input_size, 1)
+    if self.init_fn:
+      self.v_layer.apply(self.init_fn)
+
+  def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+    """Compute value estimate.
+    
+    Args:
+      inputs: Input features [batch_size, input_size].
+      
+    Returns:
+      Value estimates [batch_size].
+    """
+    out = self.v_layer(inputs)  # [batch_size, 1]
+    out = torch.squeeze(out, -1)  # [batch_size]
+    if self.return_normalizer:
+      out = self.return_normalizer(out)  # [batch_size]
+    return out
+
+
 class DistributionalValueHead(torch.nn.Module):
-  """Distributional value head for categorical value distributions (C51, D4PG)."""
+  """Distributional value head for categorical value distributions (e.g. D4PG)."""
 
   def __init__(
     self,
     vmin: float,
     vmax: float,
     num_atoms: int,
-    fn: T.Callable[[torch.nn.Module], None] | None = None,
+    init_fn: T.Callable[[torch.nn.Module], None] | None = None,
   ):
     """Initialize the distributional value head.
     
@@ -116,11 +123,11 @@ class DistributionalValueHead(torch.nn.Module):
       vmin: Minimum value of the support.
       vmax: Maximum value of the support.
       num_atoms: Number of atoms in the categorical distribution.
-      fn: Optional initialization function to apply to the layer.
+      init_fn: Optional initialization function to apply to the layer.
     """
     super().__init__()
     self.num_atoms = num_atoms
-    self.fn = fn
+    self.init_fn = init_fn
     self.values = torch.linspace(vmin, vmax, num_atoms).float()  # [num_atoms]
 
   def initialize(
@@ -137,10 +144,10 @@ class DistributionalValueHead(torch.nn.Module):
     if return_normalizer:
       raise ValueError('Return normalizers cannot be used with distributional value head.')
     self.distributional_layer = torch.nn.Linear(input_size, self.num_atoms)
-    if self.fn:
-      self.distributional_layer.apply(self.fn)
+    if self.init_fn:
+      self.distributional_layer.apply(self.init_fn)
 
-  def forward(self, inputs: torch.Tensor) -> CategoricalWithSupport:
+  def forward(self, inputs: torch.Tensor) -> CategoricalValueDistribution:
     """Compute distributional value estimate.
     
     Args:
@@ -150,7 +157,7 @@ class DistributionalValueHead(torch.nn.Module):
       Categorical distribution over value support.
     """
     logits = self.distributional_layer(inputs)  # [batch_size, num_atoms]
-    return CategoricalWithSupport(values=self.values, logits=logits)
+    return CategoricalValueDistribution(values=self.values, logits=logits)
 
 
 # ==================================================================================================
@@ -159,8 +166,8 @@ class DistributionalValueHead(torch.nn.Module):
 class CriticEncoder(T.Protocol):
   def initialize(
     self,
-    observation_space: gym.spaces.Box | gym.spaces.Dict,
-    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
     observation_normalizer: normalizers.ObservationNormalizer | None = None,
   ) -> int:
     ...
@@ -201,8 +208,8 @@ class CriticHead(T.Protocol):
 class CriticLike(T.Protocol):
   def initialize(
     self,
-    observation_space: gym.spaces.Box | gym.spaces.Dict,
-    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
     observation_normalizer: normalizers.ObservationNormalizer | None = None,
     return_normalizer: normalizers.ReturnNormalizer | None = None,
   ) -> None:
@@ -234,8 +241,8 @@ class Critic(torch.nn.Module):
 
   def initialize(
     self,
-    observation_space: gym.spaces.Box | gym.spaces.Dict,
-    action_space: gym.spaces.Box | gym.spaces.Dict,
+    observation_space: agent.ObservationSpace,
+    action_space: agent.ActionSpace,
     observation_normalizer: normalizers.ObservationNormalizer | None = None,
     return_normalizer: normalizers.ReturnNormalizer | None = None,
   ) -> None:    

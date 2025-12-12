@@ -14,7 +14,7 @@ def trpo_default_model():
     actor=models.Actor(
       encoder=models.BoxObservationEncoder(),
       torso=models.MLP((64, 64), torch.nn.Tanh),
-      head=models.DetachedScaleGaussianPolicyHead(),
+      head=models.StochasticDetachedStdPolicyHead(),
     ),
     critic=models.Critic(
       encoder=models.BoxObservationEncoder(),
@@ -28,19 +28,19 @@ def trpo_default_model():
 # ==================================================================================================
 # Replay
 
-TRPOKeys = replays.OnPolicyKeys | T.Literal['log_probs', 'locs', 'scales']
+TRPOKeys = replays.OnPolicyKeys | T.Literal['log_probs', 'means', 'stds']
 
 
 class TRPOData(replays.OnPolicyData):
   log_probs: torch.Tensor
-  locs: torch.Tensor
-  scales: torch.Tensor
+  means: torch.Tensor
+  stds: torch.Tensor
 
 
 class TRPOStep(replays.OnPolicyStep):
   log_probs: torch.Tensor
-  locs: torch.Tensor
-  scales: torch.Tensor
+  means: torch.Tensor
+  stds: torch.Tensor
 
 
 # ==================================================================================================
@@ -95,20 +95,16 @@ class TRPO(agent.Agent):
   def step(self, observations: agent.Observation) -> agent.Action:
     # Sample actions and get their log-probabilities and distribution params for training.
     with torch.no_grad():
-      distributions = self.model.actor(observations)
-      if hasattr(distributions, 'sample_with_log_prob'):
-        actions, log_probs = distributions.sample_with_log_prob()
-      else:
-        actions = distributions.sample()
-        log_probs = distributions.log_prob(actions)
+      distributions: models.NormalActionDistribution = self.model.actor(observations)
+      actions, log_probs = distributions.sample_with_log_prob()
       log_probs = log_probs.sum(dim=-1)
-      locs = distributions.loc
-      scales = distributions.stddev
+      means = distributions.distribution.mean
+      stds = distributions.distribution.stddev
     
     # Keep values for the next record.
     self.log_probs = log_probs
-    self.locs = locs
-    self.scales = scales
+    self.means = means
+    self.stds = stds
 
     return actions
 
@@ -137,8 +133,8 @@ class TRPO(agent.Agent):
       'terminations': terminations,
       'next_observations': next_observations,
       'log_probs': self.log_probs,
-      'locs': self.locs,
-      'scales': self.scales,
+      'means': self.means,
+      'stds': self.stds,
     })
 
     # Record transition in the normalizers.
@@ -161,14 +157,14 @@ class TRPO(agent.Agent):
     self.replay.compute_advantages(normalize=self.normalize_advantages)
 
     # Update the actor once with the full batch.
-    keys = ('observations', 'actions', 'log_probs', 'locs', 'scales', 'advantages')
+    keys = ('observations', 'actions', 'log_probs', 'means', 'stds', 'advantages')
     full = self.replay.get_full(*keys)
     actor_infos = self.actor_updater(
       observations=full['observations'],
       actions=full['actions'],
       log_probs=full['log_probs'],
-      locs=full['locs'],
-      scales=full['scales'],
+      means=full['means'],
+      stds=full['stds'],
       advantages=full['advantages'],
     )
     # Log actor metrics.

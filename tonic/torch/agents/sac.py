@@ -14,9 +14,9 @@ def sac_default_model():
     actor=models.Actor(
       encoder=models.BoxObservationEncoder(),
       torso=models.MLP((256, 256), torch.nn.ReLU),
-      head=models.GaussianPolicyHead(
-        loc_activation=torch.nn.Identity,
-        distribution=models.SquashedMultivariateNormalDiag,
+      head=models.StochasticPolicyHead(
+        mean_activation=torch.nn.Identity,
+        distribution=models.SquashedNormalActionDistribution,
       ),
     ),
     critic=models.Critic(

@@ -1,7 +1,7 @@
-from .utils import merge_first_two_dims
-from .utils import tile
+from .utils import merge_dim0_dim1
+from .utils import tile_dim0
 
-from .actors import ClippedRatio  # noqa
+from .actors import ClippedRatio
 from .actors import DeterministicPolicyGradient
 from .actors import DistributionalDeterministicPolicyGradient
 from .actors import MaximumAPosterioriPolicyOptimization
@@ -19,14 +19,3 @@ from .critics import TwinCriticSoftQLearning
 from .critics import VRegression
 
 from .optimizers import ConjugateGradient
-
-
-__all__ = [
-    merge_first_two_dims, tile, ClippedRatio, DeterministicPolicyGradient,
-    DistributionalDeterministicPolicyGradient,
-    MaximumAPosterioriPolicyOptimization, StochasticPolicyGradient,
-    TrustRegionPolicyGradient, TwinCriticSoftDeterministicPolicyGradient,
-    DeterministicQLearning, DistributionalDeterministicQLearning,
-    ExpectedSARSA, QRegression, TargetActionNoise,
-    TwinCriticDeterministicQLearning, TwinCriticSoftQLearning, VRegression,
-    ConjugateGradient]

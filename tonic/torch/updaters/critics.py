@@ -2,7 +2,8 @@ import typing as T
 
 import torch
 
-from tonic.torch import models, updaters
+from . import utils
+from .. import models
 
 
 # Type alias for optimizer builder functions.
@@ -30,7 +31,7 @@ class VRegression:
     self.optimizer_builder = optimizer or (lambda params: torch.optim.Adam(params, lr=1e-3))
     self.gradient_clip = gradient_clip
 
-  def initialize(self, model: torch.nn.Module) -> None:
+  def initialize(self, model: models.ActorCritic) -> None:
     """Initialize the updater with the model.
     
     Args:
@@ -42,21 +43,21 @@ class VRegression:
 
   def __call__(
     self,
-    observations: torch.Tensor,
+    observations: torch.Tensor | dict[str, torch.Tensor],
     returns: torch.Tensor,
   ) -> dict[str, torch.Tensor]:
     """Perform a value function regression update.
     
     Args:
-      observations: State observations, shape [batch_size, obs_dim].
-      returns: Target return values, shape [batch_size].
+      observations: State observations, shape [batch, obs].
+      returns: Target return values, shape [batch].
       
     Returns:
       Dictionary containing loss and predicted values.
     """
     self.optimizer.zero_grad()
-    values = self.model.critic(observations)  # [batch_size]
-    loss = self.loss(values, returns)
+    values: torch.Tensor = self.model.critic(observations)  # [batch]
+    loss: torch.Tensor = self.loss(values, returns)
 
     loss.backward()
     if self.gradient_clip > 0:
@@ -87,7 +88,7 @@ class QRegression:
     self.optimizer_builder = optimizer or (lambda params: torch.optim.Adam(params, lr=1e-3))
     self.gradient_clip = gradient_clip
 
-  def initialize(self, model: torch.nn.Module) -> None:
+  def initialize(self, model: models.ActorCritic) -> None:
     """Initialize the updater with the model.
     
     Args:
@@ -99,23 +100,23 @@ class QRegression:
 
   def __call__(
     self,
-    observations: torch.Tensor,
-    actions: torch.Tensor,
+    observations: torch.Tensor | dict[str, torch.Tensor],
+    actions: torch.Tensor | dict[str, torch.Tensor],
     returns: torch.Tensor,
   ) -> dict[str, torch.Tensor]:
     """Perform a Q-function regression update.
     
     Args:
-      observations: State observations, shape [batch_size, obs_dim].
-      actions: Actions taken, shape [batch_size, action_dim].
-      returns: Target Q-values, shape [batch_size].
+      observations: State observations, shape [batch, obs].
+      actions: Actions taken, shape [batch, action].
+      returns: Target Q-values, shape [batch].
       
     Returns:
       Dictionary containing loss and predicted Q-values.
     """
     self.optimizer.zero_grad()
-    values = self.model.critic(observations, actions)  # [batch_size]
-    loss = self.loss(values, returns)
+    values: torch.Tensor = self.model.critic(observations, actions)  # [batch]
+    loss: torch.Tensor = self.loss(values, returns)
 
     loss.backward()
     if self.gradient_clip > 0:
@@ -146,7 +147,7 @@ class DeterministicQLearning:
     self.optimizer_builder = optimizer or (lambda params: torch.optim.Adam(params, lr=1e-3))
     self.gradient_clip = gradient_clip
 
-  def initialize(self, model: torch.nn.Module) -> None:
+  def initialize(self, model: models.ActorCriticWithTargets) -> None:
     """Initialize the updater with the model.
     
     Args:
@@ -158,9 +159,9 @@ class DeterministicQLearning:
 
   def __call__(
     self,
-    observations: torch.Tensor,
-    actions: torch.Tensor,
-    next_observations: torch.Tensor,
+    observations: torch.Tensor | dict[str, torch.Tensor],
+    actions: torch.Tensor | dict[str, torch.Tensor],
+    next_observations: torch.Tensor | dict[str, torch.Tensor],
     rewards: torch.Tensor,
     discounts: torch.Tensor,
   ) -> dict[str, torch.Tensor]:
@@ -169,23 +170,23 @@ class DeterministicQLearning:
     Computes targets as r + gamma * Q_target(s', mu_target(s')).
     
     Args:
-      observations: Current state observations, shape [batch_size, obs_dim].
-      actions: Actions taken, shape [batch_size, action_dim].
-      next_observations: Next state observations, shape [batch_size, obs_dim].
-      rewards: Rewards received, shape [batch_size].
-      discounts: Discount factors (gamma * (1 - done)), shape [batch_size].
+      observations: Current state observations, shape [batch, obs].
+      actions: Actions taken, shape [batch, action].
+      next_observations: Next state observations, shape [batch, obs].
+      rewards: Rewards received, shape [batch].
+      discounts: Discount factors (gamma * (1 - done)), shape [batch].
       
     Returns:
       Dictionary containing loss and predicted Q-values.
     """
     with torch.no_grad():
-      next_actions = self.model.target_actor(next_observations)  # [batch_size, action_dim]
-      next_values = self.model.target_critic(next_observations, next_actions)  # [batch_size]
-      returns = rewards + discounts * next_values  # [batch_size]
+      next_actions = self.model.target_actor(next_observations)  # [batch, action]
+      next_values = self.model.target_critic(next_observations, next_actions)  # [batch]
+      returns = rewards + discounts * next_values  # [batch]
 
     self.optimizer.zero_grad()
-    values = self.model.critic(observations, actions)  # [batch_size]
-    loss = self.loss(values, returns)
+    values: torch.Tensor = self.model.critic(observations, actions)  # [batch]
+    loss: torch.Tensor = self.loss(values, returns)
 
     loss.backward()
     if self.gradient_clip > 0:
@@ -213,7 +214,7 @@ class DistributionalDeterministicQLearning:
     self.optimizer_builder = optimizer or (lambda params: torch.optim.Adam(params, lr=1e-3))
     self.gradient_clip = gradient_clip
 
-  def initialize(self, model: torch.nn.Module) -> None:
+  def initialize(self, model: models.ActorCriticWithTargets) -> None:
     """Initialize the updater with the model.
     
     Args:
@@ -225,9 +226,9 @@ class DistributionalDeterministicQLearning:
 
   def __call__(
     self,
-    observations: torch.Tensor,
-    actions: torch.Tensor,
-    next_observations: torch.Tensor,
+    observations: torch.Tensor | dict[str, torch.Tensor],
+    actions: torch.Tensor | dict[str, torch.Tensor],
+    next_observations: torch.Tensor | dict[str, torch.Tensor],
     rewards: torch.Tensor,
     discounts: torch.Tensor,
   ) -> dict[str, torch.Tensor]:
@@ -236,29 +237,27 @@ class DistributionalDeterministicQLearning:
     Uses categorical projection to update the value distribution.
     
     Args:
-      observations: Current state observations, shape [batch_size, obs_dim].
-      actions: Actions taken, shape [batch_size, action_dim].
-      next_observations: Next state observations, shape [batch_size, obs_dim].
-      rewards: Rewards received, shape [batch_size].
-      discounts: Discount factors, shape [batch_size].
+      observations: Current state observations, shape [batch, obs].
+      actions: Actions taken, shape [batch, action].
+      next_observations: Next state observations, shape [batch, obs].
+      rewards: Rewards received, shape [batch].
+      discounts: Discount factors, shape [batch].
       
     Returns:
       Dictionary containing the cross-entropy loss.
     """
     with torch.no_grad():
-      next_actions = self.model.target_actor(next_observations)  # [batch_size, action_dim]
+      next_actions = self.model.target_actor(next_observations)  # [batch, action]
       next_value_distributions = self.model.target_critic(next_observations, next_actions)
-      values = next_value_distributions.values  # [batch_size, num_atoms]
-      returns = rewards[:, None] + discounts[:, None] * values  # [batch_size, num_atoms]
-      targets = next_value_distributions.project(returns)  # [batch_size, num_atoms]
+      values = next_value_distributions.values  # [batch, atoms]
+      returns = rewards[:, None] + discounts[:, None] * values  # [batch, atoms]
+      targets = next_value_distributions.project(returns)  # [batch, atoms]
 
     self.optimizer.zero_grad()
-    value_distributions = self.model.critic(observations, actions)
-    log_probabilities = torch.nn.functional.log_softmax(
-      value_distributions.logits, dim=-1
-    )  # [batch_size, num_atoms]
+    value_distributions: models.CategoricalValueDistribution = self.model.critic(observations, actions)
+    log_probs = torch.nn.functional.log_softmax(value_distributions.logits, dim=-1)  # [batch, atoms]
     # Cross-entropy loss between projected target and predicted distribution.
-    loss = -(targets * log_probabilities).sum(dim=-1).mean()
+    loss: torch.Tensor = -(targets * log_probs).sum(dim=-1).mean()
 
     loss.backward()
     if self.gradient_clip > 0:
@@ -289,12 +288,12 @@ class TargetActionNoise:
     """Add clipped Gaussian noise to actions and clip to [-1, 1].
     
     Args:
-      actions: Actions to add noise to, shape [batch_size, action_dim].
+      actions: Actions to add noise to, shape [batch, action].
       
     Returns:
-      Noisy actions clipped to [-1, 1], shape [batch_size, action_dim].
+      Noisy actions clipped to [-1, 1], shape [batch, action].
     """
-    noises = self.scale * torch.randn_like(actions)  # [batch_size, action_dim]
+    noises = self.scale * torch.randn_like(actions)  # [batch, action]
     noises = torch.clamp(noises, -self.clip, self.clip)
     actions = actions + noises
     return torch.clamp(actions, -1, 1)
@@ -324,7 +323,7 @@ class TwinCriticDeterministicQLearning:
     self.target_action_noise = target_action_noise or TargetActionNoise(scale=0.2, clip=0.5)
     self.gradient_clip = gradient_clip
 
-  def initialize(self, model: torch.nn.Module) -> None:
+  def initialize(self, model: models.ActorTwinCriticWithTargets) -> None:
     """Initialize the updater with the model.
     
     Args:
@@ -338,9 +337,9 @@ class TwinCriticDeterministicQLearning:
 
   def __call__(
     self,
-    observations: torch.Tensor,
-    actions: torch.Tensor,
-    next_observations: torch.Tensor,
+    observations: torch.Tensor | dict[str, torch.Tensor],
+    actions: torch.Tensor | dict[str, torch.Tensor],
+    next_observations: torch.Tensor | dict[str, torch.Tensor],
     rewards: torch.Tensor,
     discounts: torch.Tensor,
   ) -> dict[str, torch.Tensor]:
@@ -349,29 +348,29 @@ class TwinCriticDeterministicQLearning:
     Uses minimum of twin Q-values for target computation to reduce overestimation.
     
     Args:
-      observations: Current state observations, shape [batch_size, obs_dim].
-      actions: Actions taken, shape [batch_size, action_dim].
-      next_observations: Next state observations, shape [batch_size, obs_dim].
-      rewards: Rewards received, shape [batch_size].
-      discounts: Discount factors, shape [batch_size].
+      observations: Current state observations, shape [batch, obs].
+      actions: Actions taken, shape [batch, action].
+      next_observations: Next state observations, shape [batch, obs].
+      rewards: Rewards received, shape [batch].
+      discounts: Discount factors, shape [batch].
       
     Returns:
       Dictionary containing loss and both Q-values.
     """
     with torch.no_grad():
-      next_actions = self.model.target_actor(next_observations)  # [batch_size, action_dim]
+      next_actions = self.model.target_actor(next_observations)  # [batch, action]
       next_actions = self.target_action_noise(next_actions)  # Add smoothing noise
-      next_values_1 = self.model.target_critic_1(next_observations, next_actions)  # [batch_size]
-      next_values_2 = self.model.target_critic_2(next_observations, next_actions)  # [batch_size]
+      next_values_1 = self.model.target_critic_1(next_observations, next_actions)  # [batch]
+      next_values_2 = self.model.target_critic_2(next_observations, next_actions)  # [batch]
       # Use minimum to reduce overestimation bias.
-      next_values = torch.min(next_values_1, next_values_2)  # [batch_size]
-      returns = rewards + discounts * next_values  # [batch_size]
+      next_values: torch.Tensor = torch.min(next_values_1, next_values_2)  # [batch]
+      returns = rewards + discounts * next_values  # [batch]
 
     self.optimizer.zero_grad()
-    values_1 = self.model.critic_1(observations, actions)  # [batch_size]
-    values_2 = self.model.critic_2(observations, actions)  # [batch_size]
-    loss_1 = self.loss(values_1, returns)
-    loss_2 = self.loss(values_2, returns)
+    values_1: torch.Tensor = self.model.critic_1(observations, actions)  # [batch]
+    values_2: torch.Tensor = self.model.critic_2(observations, actions)  # [batch]
+    loss_1: torch.Tensor = self.loss(values_1, returns)
+    loss_2: torch.Tensor = self.loss(values_2, returns)
     loss = loss_1 + loss_2
 
     loss.backward()
@@ -406,7 +405,7 @@ class TwinCriticSoftQLearning:
     self.entropy_coeff = entropy_coeff
     self.gradient_clip = gradient_clip
 
-  def initialize(self, model: torch.nn.Module) -> None:
+  def initialize(self, model: models.ActorTwinCriticWithTargets) -> None:
     """Initialize the updater with the model.
     
     Args:
@@ -420,9 +419,9 @@ class TwinCriticSoftQLearning:
 
   def __call__(
     self,
-    observations: torch.Tensor,
-    actions: torch.Tensor,
-    next_observations: torch.Tensor,
+    observations: torch.Tensor | dict[str, torch.Tensor],
+    actions: torch.Tensor | dict[str, torch.Tensor],
+    next_observations: torch.Tensor | dict[str, torch.Tensor],
     rewards: torch.Tensor,
     discounts: torch.Tensor,
   ) -> dict[str, torch.Tensor]:
@@ -431,36 +430,31 @@ class TwinCriticSoftQLearning:
     Computes targets as r + gamma * (min(Q) - alpha * log(pi)).
     
     Args:
-      observations: Current state observations, shape [batch_size, obs_dim].
-      actions: Actions taken, shape [batch_size, action_dim].
-      next_observations: Next state observations, shape [batch_size, obs_dim].
-      rewards: Rewards received, shape [batch_size].
-      discounts: Discount factors, shape [batch_size].
+      observations: Current state observations, shape [batch, obs].
+      actions: Actions taken, shape [batch, action].
+      next_observations: Next state observations, shape [batch, obs].
+      rewards: Rewards received, shape [batch].
+      discounts: Discount factors, shape [batch].
       
     Returns:
       Dictionary containing loss and both Q-values.
     """
     with torch.no_grad():
-      next_distributions = self.model.actor(next_observations)
+      next_distributions: models.ActionDistribution = self.model.actor(next_observations)
       # Use reparameterization trick for sampling.
-      if hasattr(next_distributions, 'rsample_with_log_prob'):
-        outs = next_distributions.rsample_with_log_prob()
-        next_actions, next_log_probs = outs
-      else:
-        next_actions = next_distributions.rsample()  # [batch_size, action_dim]
-        next_log_probs = next_distributions.log_prob(next_actions)
-      next_log_probs = next_log_probs.sum(dim=-1)  # [batch_size]
-      next_values_1 = self.model.target_critic_1(next_observations, next_actions)  # [batch_size]
-      next_values_2 = self.model.target_critic_2(next_observations, next_actions)  # [batch_size]
-      next_values = torch.min(next_values_1, next_values_2)  # [batch_size]
+      next_actions, next_log_probs = next_distributions.rsample_with_log_prob()
+      next_log_probs = next_log_probs.sum(dim=-1)  # [batch]
+      next_values_1: torch.Tensor = self.model.target_critic_1(next_observations, next_actions)
+      next_values_2: torch.Tensor = self.model.target_critic_2(next_observations, next_actions)
+      next_values: torch.Tensor = torch.min(next_values_1, next_values_2)  # [batch]
       # SAC target: r + gamma * (Q - alpha * log(pi)).
       returns = rewards + discounts * (next_values - self.entropy_coeff * next_log_probs)
 
     self.optimizer.zero_grad()
-    values_1 = self.model.critic_1(observations, actions)  # [batch_size]
-    values_2 = self.model.critic_2(observations, actions)  # [batch_size]
-    loss_1 = self.loss(values_1, returns)
-    loss_2 = self.loss(values_2, returns)
+    values_1: torch.Tensor = self.model.critic_1(observations, actions)  # [batch]
+    values_2: torch.Tensor = self.model.critic_2(observations, actions)  # [batch]
+    loss_1: torch.Tensor = self.loss(values_1, returns)
+    loss_2: torch.Tensor = self.loss(values_2, returns)
     loss = loss_1 + loss_2
 
     loss.backward()
@@ -495,7 +489,7 @@ class ExpectedSARSA:
     self.optimizer_builder = optimizer or (lambda params: torch.optim.Adam(params, lr=3e-4))
     self.gradient_clip = gradient_clip
 
-  def initialize(self, model: torch.nn.Module) -> None:
+  def initialize(self, model: models.ActorCriticWithTargets) -> None:
     """Initialize the updater with the model.
     
     Args:
@@ -507,9 +501,9 @@ class ExpectedSARSA:
 
   def __call__(
     self,
-    observations: torch.Tensor,
-    actions: torch.Tensor,
-    next_observations: torch.Tensor,
+    observations: torch.Tensor | dict[str, torch.Tensor],
+    actions: torch.Tensor | dict[str, torch.Tensor],
+    next_observations: torch.Tensor | dict[str, torch.Tensor],
     rewards: torch.Tensor,
     discounts: torch.Tensor,
   ) -> dict[str, torch.Tensor]:
@@ -518,38 +512,30 @@ class ExpectedSARSA:
     Approximates E[Q(s', a')] by averaging over sampled actions.
     
     Args:
-      observations: Current state observations, shape [batch_size, obs_dim].
-      actions: Actions taken, shape [batch_size, action_dim].
-      next_observations: Next state observations, shape [batch_size, obs_dim].
-      rewards: Rewards received, shape [batch_size].
-      discounts: Discount factors, shape [batch_size].
+      observations: Current state observations, shape [batch, obs].
+      actions: Actions taken, shape [batch, action].
+      next_observations: Next state observations, shape [batch, obs].
+      rewards: Rewards received, shape [batch].
+      discounts: Discount factors, shape [batch].
       
     Returns:
       Dictionary containing loss and predicted Q-values.
     """
     # Approximate the expected next values using Monte Carlo sampling.
     with torch.no_grad():
-      next_target_distributions = self.model.target_actor(next_observations)
-      next_actions = next_target_distributions.rsample(
-        (self.num_samples,)
-      )  # [num_samples, batch, action_dim]
-      next_actions = updaters.merge_first_two_dims(next_actions)  # [num_samples * batch, act_dim]
-      next_observations = updaters.tile(
-        next_observations, self.num_samples
-      )  # [num_samples, batch, obs_dim]
-      next_observations = updaters.merge_first_two_dims(
-        next_observations
-      )  # [num_samples*batch, obs_dim]
-      next_values = self.model.target_critic(
-        next_observations, next_actions
-      )  # [num_samples * batch]
-      next_values = next_values.view(self.num_samples, -1)  # [num_samples, batch]
-      next_values = next_values.mean(dim=0)  # [batch_size]
-      returns = rewards + discounts * next_values  # [batch_size]
+      next_target_dist: models.NormalActionDistribution = self.model.target_actor(next_observations)
+      next_actions = next_target_dist.rsample((self.num_samples,))  # [num, batch, action]
+      next_actions = utils.map_tensors(utils.merge_dim0_dim1, next_actions)  # [num * batch, action]
+      next_observations = utils.map_tensors(utils.tile_dim0, next_observations, self.num_samples)  # [num, batch, obs]
+      next_observations = utils.map_tensors(utils.merge_dim0_dim1, next_observations)  # [num * batch, obs]
+      next_values: torch.Tensor = self.model.target_critic(next_observations, next_actions)  # [num * batch]
+      next_values = next_values.view(self.num_samples, -1)  # [num, batch]
+      next_values = next_values.mean(dim=0)  # [batch]
+      returns = rewards + discounts * next_values  # [batch]
 
     self.optimizer.zero_grad()
-    values = self.model.critic(observations, actions)  # [batch_size]
-    loss = self.loss(returns, values)
+    values: torch.Tensor = self.model.critic(observations, actions)  # [batch]
+    loss: torch.Tensor = self.loss(returns, values)
 
     loss.backward()
     if self.gradient_clip > 0:

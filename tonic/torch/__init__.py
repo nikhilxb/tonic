@@ -1,1 +1,1 @@
-from . import agent, agents, models, normalizers, updaters, utils
+from . import agent, agents, models, normalizers, space, updaters

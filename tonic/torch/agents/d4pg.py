@@ -38,7 +38,9 @@ D4PGStep = replays.OffPolicyStep
 # Agent
 
 class D4PG(agent.Agent):
-  """Distributed Distributional Deterministic Policy Gradients. https://arxiv.org/pdf/1804.08617.pdf"""
+  """Distributed Distributional Deterministic Deep Policy Gradient.
+  https://arxiv.org/pdf/1804.08617.pdf
+  """
   model: models.ActorCriticWithTargets
 
   def __init__(

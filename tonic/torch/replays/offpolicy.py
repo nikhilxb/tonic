@@ -35,8 +35,8 @@ class OffPolicyData(T.TypedDict):
 
 
 Keys = T.TypeVar('Keys', bound=T.LiteralString)
-Data = T.TypeVar('Data', bound=OffPolicyData)
-Step = T.TypeVar('Step', bound=OffPolicyStep)
+Data = T.TypeVar('Data', bound=T.Mapping[str, T.Any])
+Step = T.TypeVar('Step', bound=T.Mapping[str, T.Any])
 
 
 class OffPolicyReplay(T.Generic[Keys, Data, Step]):
@@ -126,7 +126,7 @@ class OffPolicyReplay(T.Generic[Keys, Data, Step]):
     """
     # Compute discount factors from terminations.
     continuations = 1 -  step['terminations'].float()  # [num_envs]
-    step['discounts'] = continuations * self.discount_factor
+    step['discounts'] = continuations * self.discount_factor  # type: ignore
 
     # Initialize buffers on first call.
     if len(self._buffers) == 0:

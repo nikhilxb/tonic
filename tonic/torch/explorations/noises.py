@@ -5,7 +5,7 @@ import typing as T
 import gym.spaces
 import torch
 
-from .. import agent, utils
+from .. import agent, space
 
 
 class RandomPolicy:
@@ -20,7 +20,7 @@ class RandomPolicy:
     self._action_space = action_space
 
   def __call__(self) -> agent.Action:
-    return utils.sample_tensors(self._action_space, rng=self._rng)
+    return space.sample_tensors(self._action_space, rng=self._rng)
 
 
 class NoActionNoise:

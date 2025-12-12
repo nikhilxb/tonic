@@ -14,7 +14,7 @@ def a2c_default_model():
     actor=models.Actor(
       encoder=models.BoxObservationEncoder(),
       torso=models.MLP((64, 64), torch.nn.Tanh),
-      head=models.DetachedScaleGaussianPolicyHead(),
+      head=models.StochasticDetachedStdPolicyHead(),
     ),
     critic=models.Critic(
       encoder=models.BoxObservationEncoder(),
@@ -93,16 +93,12 @@ class A2C(agent.Agent):
   def step(self, observations: agent.Observation) -> agent.Action:
     # Sample actions and get their log-probabilities for training.
     with torch.no_grad():
-      distributions = self.model.actor(observations)
-      if hasattr(distributions, 'sample_with_log_prob'):
-        actions, log_probs = distributions.sample_with_log_prob()
-      else:
-        actions = distributions.sample()
-        log_probs = distributions.log_prob(actions)
+      distributions: models.ActionDistribution = self.model.actor(observations)
+      actions, log_probs = distributions.sample_with_log_prob()
       log_probs = log_probs.sum(dim=-1)
     
     # Keep values for the next record.
-    self.log_probs = log_probs
+    self.log_probs: torch.Tensor = log_probs
 
     return actions
 
@@ -110,7 +106,9 @@ class A2C(agent.Agent):
   def test_step(self, observations: agent.Observation) -> agent.Action:
     # Sample actions for testing.
     with torch.no_grad():
-      return self.model.actor(observations).sample()
+      distributions: models.ActionDistribution = self.model.actor(observations)
+      actions = distributions.sample()
+    return actions
     
   @T.override
   def record(

@@ -14,7 +14,7 @@ def ppo_default_model():
     actor=models.Actor(
       encoder=models.BoxObservationEncoder(),
       torso=models.MLP((64, 64), torch.nn.Tanh),
-      head=models.DetachedScaleGaussianPolicyHead(),
+      head=models.StochasticDetachedStdPolicyHead(),
     ),
     critic=models.Critic(
       encoder=models.BoxObservationEncoder(),
@@ -92,12 +92,8 @@ class PPO(agent.Agent):
   def step(self, observations: agent.Observation) -> agent.Action:
     # Sample actions and get their log-probabilities for training.
     with torch.no_grad():
-      distributions = self.model.actor(observations)
-      if hasattr(distributions, 'sample_with_log_prob'):
-        actions, log_probs = distributions.sample_with_log_prob()
-      else:
-        actions = distributions.sample()
-        log_probs = distributions.log_prob(actions)
+      distributions: models.ActionDistribution = self.model.actor(observations)
+      actions, log_probs = distributions.sample_with_log_prob()
       log_probs = log_probs.sum(dim=-1)
     
     # Keep values for the next record.

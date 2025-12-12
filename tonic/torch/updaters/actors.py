@@ -2,10 +2,11 @@ import typing as T
 
 import torch
 
-from tonic.torch import models, updaters
+from .. import agent, models, space
+from . import optimizers, utils
 
 
-FLOAT_EPSILON = 1e-8
+EPS = 1e-8
 
 
 # Type alias for optimizer builder functions.
@@ -33,7 +34,7 @@ class StochasticPolicyGradient:
     self.entropy_coeff = entropy_coeff
     self.gradient_clip = gradient_clip
 
-  def initialize(self, model: torch.nn.Module) -> None:
+  def initialize(self, model: models.ActorCritic) -> None:
     """Initialize the updater with the model.
     
     Args:
@@ -45,8 +46,8 @@ class StochasticPolicyGradient:
 
   def __call__(
     self,
-    observations: torch.Tensor,
-    actions: torch.Tensor,
+    observations: torch.Tensor | dict[str, torch.Tensor],
+    actions: torch.Tensor | dict[str, torch.Tensor],
     advantages: torch.Tensor,
     log_probs: torch.Tensor,
   ) -> dict[str, torch.Tensor]:
@@ -66,13 +67,12 @@ class StochasticPolicyGradient:
       loss = torch.as_tensor(0., dtype=torch.float32)
       kl = torch.as_tensor(0., dtype=torch.float32)
       with torch.no_grad():
-        distributions = self.model.actor(observations)
+        distributions: models.ActionDistribution = self.model.actor(observations)
         entropy = distributions.entropy().mean()
-        std = distributions.stddev.mean()
-
+        std = distributions.std().mean()
     else:
       self.optimizer.zero_grad()
-      distributions = self.model.actor(observations)  # [batch_size, action_dim]
+      distributions: models.ActionDistribution = self.model.actor(observations)  # [batch, action]
       new_log_probs = distributions.log_prob(actions).sum(dim=-1)  # [batch_size]
       # Policy gradient loss: -E[A * log(pi(a|s))].
       loss = -(advantages * new_log_probs).mean()
@@ -88,7 +88,7 @@ class StochasticPolicyGradient:
       loss = loss.detach()
       kl = (log_probs - new_log_probs).mean().detach()
       entropy = entropy.detach()
-      std = distributions.stddev.mean().detach()
+      std = distributions.std().mean().detach()
 
     return dict(loss=loss, kl=kl, entropy=entropy, std=std)
 
@@ -120,7 +120,7 @@ class ClippedRatio:
     self.entropy_coeff = entropy_coeff
     self.gradient_clip = gradient_clip
 
-  def initialize(self, model: torch.nn.Module) -> None:
+  def initialize(self, model: models.ActorCritic) -> None:
     """Initialize the updater with the model.
     
     Args:
@@ -132,8 +132,8 @@ class ClippedRatio:
 
   def __call__(
     self,
-    observations: torch.Tensor,
-    actions: torch.Tensor,
+    observations: torch.Tensor | dict[str, torch.Tensor],
+    actions: torch.Tensor | dict[str, torch.Tensor],
     advantages: torch.Tensor,
     log_probs: torch.Tensor,
   ) -> dict[str, torch.Tensor]:
@@ -154,13 +154,13 @@ class ClippedRatio:
       kl = torch.as_tensor(0., dtype=torch.float32)
       clip_fraction = torch.as_tensor(0., dtype=torch.float32)
       with torch.no_grad():
-        distributions = self.model.actor(observations)
+        distributions: models.ActionDistribution = self.model.actor(observations)
         entropy = distributions.entropy().mean()
-        std = distributions.stddev.mean()
+        std = distributions.std().mean()
 
     else:
       self.optimizer.zero_grad()
-      distributions = self.model.actor(observations)  # [batch_size, action_dim]
+      distributions: models.ActionDistribution = self.model.actor(observations)  # [batch, action]
       new_log_probs = distributions.log_prob(actions).sum(dim=-1)  # [batch_size]
       ratios_1 = torch.exp(new_log_probs - log_probs)  # [batch_size]
       surrogates_1 = advantages * ratios_1  # [batch_size]
@@ -185,7 +185,7 @@ class ClippedRatio:
       entropy = entropy.detach()
       clipped = ratios_1.gt(ratio_high) | ratios_1.lt(ratio_low)
       clip_fraction = torch.as_tensor(clipped, dtype=torch.float32).mean()
-      std = distributions.stddev.mean().detach()
+      std = distributions.std().mean().detach()
 
     return dict(
       loss=loss,
@@ -211,10 +211,10 @@ class TrustRegionPolicyGradient:
       optimizer: Conjugate gradient optimizer. Defaults to ConjugateGradient().
       entropy_coeff: Coefficient for entropy regularization (encourages exploration).
     """
-    self.optimizer = optimizer or updaters.ConjugateGradient()
+    self.optimizer = optimizer or optimizers.ConjugateGradient()
     self.entropy_coeff = entropy_coeff
 
-  def initialize(self, model: torch.nn.Module) -> None:
+  def initialize(self, model: models.ActorCritic) -> None:
     """Initialize the updater with the model.
     
     Args:
@@ -225,11 +225,11 @@ class TrustRegionPolicyGradient:
 
   def __call__(
     self,
-    observations: torch.Tensor,
-    actions: torch.Tensor,
+    observations: torch.Tensor | dict[str, torch.Tensor],
+    actions: torch.Tensor | dict[str, torch.Tensor],
     log_probs: torch.Tensor,
-    locs: torch.Tensor,
-    scales: torch.Tensor,
+    means: torch.Tensor,
+    stds: torch.Tensor,
     advantages: torch.Tensor,
   ) -> dict[str, torch.Tensor]:
     """Perform a TRPO update using natural gradients.
@@ -238,8 +238,8 @@ class TrustRegionPolicyGradient:
       observations: State observations, shape [batch_size, obs_dim].
       actions: Actions taken, shape [batch_size, action_dim].
       log_probs: Log probabilities of actions under old policy, shape [batch_size].
-      locs: Old policy distribution means, shape [batch_size, action_dim].
-      scales: Old policy distribution stds, shape [batch_size, action_dim].
+      means: Old policy distribution means, shape [batch_size, action_dim].
+      stds: Old policy distribution stds, shape [batch_size, action_dim].
       advantages: Advantage estimates, shape [batch_size].
       
     Returns:
@@ -254,7 +254,7 @@ class TrustRegionPolicyGradient:
     else:
       kl, loss, steps = self.optimizer.optimize(
         loss_function=lambda: self._loss(observations, actions, log_probs, advantages),
-        constraint_function=lambda: self._kl(observations, locs, scales),
+        constraint_function=lambda: self._kl(observations, means, stds),
         variables=self.variables,
       )
 
@@ -262,8 +262,8 @@ class TrustRegionPolicyGradient:
 
   def _loss(
     self,
-    observations: torch.Tensor,
-    actions: torch.Tensor,
+    observations: torch.Tensor | dict[str, torch.Tensor],
+    actions: torch.Tensor | dict[str, torch.Tensor],
     old_log_probs: torch.Tensor,
     advantages: torch.Tensor,
   ) -> torch.Tensor:
@@ -278,7 +278,7 @@ class TrustRegionPolicyGradient:
     Returns:
       Scalar loss value.
     """
-    distributions = self.model.actor(observations)
+    distributions: models.NormalActionDistribution = self.model.actor(observations)
     log_probs = distributions.log_prob(actions).sum(dim=-1)  # [batch_size]
     ratios = torch.exp(log_probs - old_log_probs)  # [batch_size]
     loss = -(ratios * advantages).mean()
@@ -289,23 +289,26 @@ class TrustRegionPolicyGradient:
 
   def _kl(
     self,
-    observations: torch.Tensor,
-    locs: torch.Tensor,
-    scales: torch.Tensor,
+    observations: torch.Tensor | dict[str, torch.Tensor],
+    means: torch.Tensor,
+    stds: torch.Tensor,
   ) -> torch.Tensor:
     """Compute KL divergence between old and new policies.
     
     Args:
       observations: State observations, shape [batch_size, obs_dim].
-      locs: Old policy distribution means, shape [batch_size, action_dim].
-      scales: Old policy distribution stds, shape [batch_size, action_dim].
+      means: Old policy distribution means, shape [batch_size, action_dim].
+      stds: Old policy distribution stds, shape [batch_size, action_dim].
       
     Returns:
       Mean KL divergence.
     """
-    distributions = self.model.actor(observations)
-    old_distributions = type(distributions)(locs, scales)
-    return torch.distributions.kl.kl_divergence(distributions, old_distributions).mean()
+    distributions: models.NormalActionDistribution = self.model.actor(observations)
+    old_distributions = type(distributions)(distributions.action_space, means, stds)
+    return torch.distributions.kl.kl_divergence(
+      distributions.distribution,
+      old_distributions.distribution,
+    ).mean()
 
 
 class DeterministicPolicyGradient:
@@ -326,7 +329,10 @@ class DeterministicPolicyGradient:
     self.optimizer_builder = optimizer or (lambda params: torch.optim.Adam(params, lr=1e-3))
     self.gradient_clip = gradient_clip
 
-  def initialize(self, model: torch.nn.Module) -> None:
+  def initialize(
+    self,
+    model: models.ActorCritic | models.ActorCriticWithTargets | models.ActorTwinCriticWithTargets,
+  ) -> None:
     """Initialize the updater with the model.
     
     Args:
@@ -336,7 +342,10 @@ class DeterministicPolicyGradient:
     self.variables = models.trainable_variables(self.model.actor)
     self.optimizer = self.optimizer_builder(self.variables)
 
-  def __call__(self, observations: torch.Tensor) -> dict[str, torch.Tensor]:
+  def __call__(
+    self,
+    observations: torch.Tensor | dict[str, torch.Tensor],
+  ) -> dict[str, torch.Tensor]:
     """Perform a deterministic policy gradient update.
     
     Maximizes the Q-value of actions selected by the current policy.
@@ -354,8 +363,8 @@ class DeterministicPolicyGradient:
       var.requires_grad = False
 
     self.optimizer.zero_grad()
-    actions = self.model.actor(observations)  # [batch_size, action_dim]
-    values = self.model.critic(observations, actions)  # [batch_size]
+    actions: agent.Action = self.model.actor(observations)  # [batch_size, action_dim]
+    values: torch.Tensor = self.model.critic(observations, actions)  # [batch_size]
     # Maximize Q(s, mu(s)) => minimize -Q(s, mu(s)).
     loss = -values.mean()
 
@@ -389,7 +398,10 @@ class DistributionalDeterministicPolicyGradient:
     self.optimizer_builder = optimizer or (lambda params: torch.optim.Adam(params, lr=1e-3))
     self.gradient_clip = gradient_clip
 
-  def initialize(self, model: torch.nn.Module) -> None:
+  def initialize(
+    self,
+    model: models.ActorCritic | models.ActorCriticWithTargets | models.ActorTwinCriticWithTargets,
+  ) -> None:
     """Initialize the updater with the model.
     
     Args:
@@ -399,7 +411,10 @@ class DistributionalDeterministicPolicyGradient:
     self.variables = models.trainable_variables(self.model.actor)
     self.optimizer = self.optimizer_builder(self.variables)
 
-  def __call__(self, observations: torch.Tensor) -> dict[str, torch.Tensor]:
+  def __call__(
+    self,
+    observations: torch.Tensor | dict[str, torch.Tensor],
+  ) -> dict[str, torch.Tensor]:
     """Perform a distributional deterministic policy gradient update.
     
     Maximizes the expected value from the critic's value distribution.
@@ -417,8 +432,8 @@ class DistributionalDeterministicPolicyGradient:
       var.requires_grad = False
 
     self.optimizer.zero_grad()
-    actions = self.model.actor(observations)  # [batch_size, action_dim]
-    value_distributions = self.model.critic(observations, actions)
+    actions: agent.Action = self.model.actor(observations)  # [batch_size, action_dim]
+    value_distributions: models.CategoricalValueDistribution = self.model.critic(observations, actions)
     values = value_distributions.mean()  # [batch_size]
     # Maximize E[Z(s, mu(s))] => minimize -E[Z(s, mu(s))].
     loss = -values.mean()
@@ -456,7 +471,7 @@ class TwinCriticSoftDeterministicPolicyGradient:
     self.entropy_coeff = entropy_coeff
     self.gradient_clip = gradient_clip
 
-  def initialize(self, model: torch.nn.Module) -> None:
+  def initialize(self, model: models.ActorTwinCriticWithTargets) -> None:
     """Initialize the updater with the model.
     
     Args:
@@ -466,7 +481,10 @@ class TwinCriticSoftDeterministicPolicyGradient:
     self.variables = models.trainable_variables(self.model.actor)
     self.optimizer = self.optimizer_builder(self.variables)
 
-  def __call__(self, observations: torch.Tensor) -> dict[str, torch.Tensor]:
+  def __call__(
+    self,
+    observations: torch.Tensor | dict[str, torch.Tensor],
+  ) -> dict[str, torch.Tensor]:
     """Perform a soft actor-critic policy update.
     
     Maximizes Q(s,a) - alpha * log(pi(a|s)) using reparameterization trick.
@@ -486,16 +504,12 @@ class TwinCriticSoftDeterministicPolicyGradient:
       var.requires_grad = False
 
     self.optimizer.zero_grad()
-    distributions = self.model.actor(observations)  # [batch_size, action_dim]
+    distributions: models.ActionDistribution = self.model.actor(observations)  # [batch_size, action_dim]
     # Use reparameterization trick for differentiable sampling.
-    if hasattr(distributions, 'rsample_with_log_prob'):
-      actions, log_probs = distributions.rsample_with_log_prob()
-    else:
-      actions = distributions.rsample()  # [batch_size, action_dim]
-      log_probs = distributions.log_prob(actions)
+    actions, log_probs = distributions.rsample_with_log_prob()
     log_probs = log_probs.sum(dim=-1)  # [batch_size]
-    values_1 = self.model.critic_1(observations, actions)  # [batch_size]
-    values_2 = self.model.critic_2(observations, actions)  # [batch_size]
+    values_1: torch.Tensor = self.model.critic_1(observations, actions)  # [batch_size]
+    values_2: torch.Tensor = self.model.critic_2(observations, actions)  # [batch_size]
     values = torch.min(values_1, values_2)  # [batch_size]
     # SAC objective: maximize Q - alpha*log(pi).
     loss = (self.entropy_coeff * log_probs - values).mean()
@@ -569,7 +583,11 @@ class MaximumAPosterioriPolicyOptimization:
     )
     self.gradient_clip = gradient_clip
 
-  def initialize(self, model: torch.nn.Module, action_space: T.Any) -> None:
+  def initialize(
+    self,
+    model: models.ActorCriticWithTargets,
+    action_space: agent.ActionSpace,
+  ) -> None:
     """Initialize the updater with model and action space.
     
     Args:
@@ -579,6 +597,9 @@ class MaximumAPosterioriPolicyOptimization:
     self.model = model
     self.actor_variables = models.trainable_variables(self.model.actor)
     self.actor_optimizer = self.actor_optimizer_builder(self.actor_variables)
+    
+    action_space_box = space.pack_space(action_space)
+    action_size = action_space_box.shape[0]
 
     # Initialize dual variables (Lagrange multipliers).
     self.dual_variables: list[torch.nn.Parameter] = []
@@ -586,7 +607,7 @@ class MaximumAPosterioriPolicyOptimization:
       torch.as_tensor([self.initial_log_temperature], dtype=torch.float32)
     )
     self.dual_variables.append(self.log_temperature)
-    shape = [action_space.shape[0]] if self.per_dim_constraining else [1]
+    shape = [action_size] if self.per_dim_constraining else [1]
     self.log_alpha_mean = torch.nn.Parameter(
       torch.full(shape, self.initial_log_alpha_mean, dtype=torch.float32)
     )
@@ -602,7 +623,10 @@ class MaximumAPosterioriPolicyOptimization:
       self.dual_variables.append(self.log_penalty_temperature)
     self.dual_optimizer = self.dual_optimizer_builder(self.dual_variables)
 
-  def __call__(self, observations: torch.Tensor) -> dict[str, torch.Tensor]:
+  def __call__(
+    self,
+    observations: torch.Tensor | dict[str, torch.Tensor],
+  ) -> dict[str, torch.Tensor]:
     """Perform an MPO update using EM-style optimization.
     
     Args:
@@ -643,9 +667,9 @@ class MaximumAPosterioriPolicyOptimization:
       return weights, loss
 
     def independent_normals(
-      distribution_1: T.Any,
-      distribution_2: T.Any | None = None,
-    ) -> T.Any:
+      distribution_1: torch.distributions.Normal,
+      distribution_2: torch.distributions.Normal | None = None,
+    ) -> torch.distributions.independent.Independent:
       """Create independent normal distribution from base distributions."""
       distribution_2 = distribution_2 or distribution_1
       return torch.distributions.independent.Independent(
@@ -654,9 +678,7 @@ class MaximumAPosterioriPolicyOptimization:
 
     # Clamp dual variables to prevent numerical issues.
     with torch.no_grad():
-      self.log_temperature.data.copy_(
-        torch.maximum(self.min_log_dual, self.log_temperature)
-      )
+      self.log_temperature.data.copy_(torch.maximum(self.min_log_dual, self.log_temperature))
       self.log_alpha_mean.data.copy_(torch.maximum(self.min_log_dual, self.log_alpha_mean))
       self.log_alpha_std.data.copy_(torch.maximum(self.min_log_dual, self.log_alpha_std))
       if self.action_penalization:
@@ -665,35 +687,35 @@ class MaximumAPosterioriPolicyOptimization:
         )
 
       # Sample actions from target policy and evaluate with target critic.
-      target_distributions = self.model.target_actor(observations)
-      actions = target_distributions.sample((self.num_samples,))  # [num_samples, batch, act_dim]
+      target_dist: models.NormalActionDistribution = self.model.target_actor(observations)
+      actions = target_dist.sample((self.num_samples,))  # [num, batch, action]
+      assert isinstance(target_dist.distribution, torch.distributions.normal.Normal)
+      target_indep_dist = independent_normals(target_dist.distribution)
 
-      tiled_observations = updaters.tile(observations, self.num_samples)
-      flat_observations = updaters.merge_first_two_dims(tiled_observations)
-      flat_actions = updaters.merge_first_two_dims(actions)
-      values = self.model.target_critic(flat_observations, flat_actions)  # [num_samples * batch]
-      values = values.view(self.num_samples, -1)  # [num_samples, batch]
-
-      assert isinstance(target_distributions, torch.distributions.normal.Normal)
-      target_distributions = independent_normals(target_distributions)
+      tile_observations = utils.map_tensors(utils.tile_dim0, observations, self.num_samples)
+      tile_observations = utils.map_tensors(utils.merge_dim0_dim1, tile_observations)  # [num * batch, obs]
+      tile_actions = utils.map_tensors(utils.merge_dim0_dim1, actions)  # [num * batch, action]
+      values: torch.Tensor = self.model.target_critic(tile_observations, tile_actions)  # [num * batch]
+      values = values.view(self.num_samples, -1)  # [num, batch]      
 
     self.actor_optimizer.zero_grad()
     self.dual_optimizer.zero_grad()
 
-    distributions = self.model.actor(observations)
-    distributions = independent_normals(distributions)
+    dist: models.NormalActionDistribution = self.model.actor(observations)
+    assert isinstance(dist.distribution, torch.distributions.normal.Normal)
+    indep_dist = independent_normals(dist.distribution)
 
-    temperature = torch.nn.functional.softplus(self.log_temperature) + FLOAT_EPSILON
-    alpha_mean = torch.nn.functional.softplus(self.log_alpha_mean) + FLOAT_EPSILON
-    alpha_std = torch.nn.functional.softplus(self.log_alpha_std) + FLOAT_EPSILON
+    temperature = torch.nn.functional.softplus(self.log_temperature) + EPS
+    alpha_mean = torch.nn.functional.softplus(self.log_alpha_mean) + EPS
+    alpha_std = torch.nn.functional.softplus(self.log_alpha_std) + EPS
     weights, temperature_loss = weights_and_temperature_loss(values, self.epsilon, temperature)
+
+    flat_actions = space.pack_tensors(actions)  # [num, batch, action]
 
     # Action penalization is quadratic beyond [-1, 1].
     if self.action_penalization:
-      penalty_temperature = (
-        torch.nn.functional.softplus(self.log_penalty_temperature) + FLOAT_EPSILON
-      )
-      diff_bounds = actions - torch.clamp(actions, -1, 1)
+      penalty_temperature = torch.nn.functional.softplus(self.log_penalty_temperature) + EPS
+      diff_bounds = flat_actions - torch.clamp(flat_actions, -1, 1)
       action_bound_costs = -torch.norm(diff_bounds, dim=-1)  # [num_samples, batch]
       penalty_weights, penalty_temperature_loss = weights_and_temperature_loss(
         action_bound_costs, self.epsilon_penalty, penalty_temperature
@@ -702,36 +724,32 @@ class MaximumAPosterioriPolicyOptimization:
       temperature_loss += penalty_temperature_loss
 
     # Decompose the policy into fixed-mean and fixed-std distributions.
-    fixed_std_distribution = independent_normals(
-      distributions.base_dist, target_distributions.base_dist
-    )
-    fixed_mean_distribution = independent_normals(
-      target_distributions.base_dist, distributions.base_dist
-    )
+    fixed_std_dist = independent_normals(indep_dist.base_dist, target_indep_dist.base_dist)
+    fixed_mean_dist = independent_normals(target_indep_dist.base_dist, indep_dist.base_dist)
 
     # Compute the decomposed policy losses (M-step).
-    policy_mean_losses = (
-      fixed_std_distribution.base_dist.log_prob(actions).sum(dim=-1) * weights
+    policy_mean_losses: torch.Tensor = (
+      T.cast(torch.distributions.Normal, fixed_std_dist.base_dist)
+      .log_prob(flat_actions).sum(dim=-1) * weights
     ).sum(dim=0)
-    policy_mean_loss = -(policy_mean_losses).mean()
-    policy_std_losses = (
-      fixed_mean_distribution.base_dist.log_prob(actions).sum(dim=-1) * weights
+    policy_mean_loss = -policy_mean_losses.mean()
+    policy_std_losses: torch.Tensor = (
+      T.cast(torch.distributions.Normal, fixed_mean_dist.base_dist)
+      .log_prob(flat_actions).sum(dim=-1) * weights
     ).sum(dim=0)
     policy_std_loss = -policy_std_losses.mean()
 
     # Compute the decomposed KL between the target and online policies.
     if self.per_dim_constraining:
       kl_mean = torch.distributions.kl.kl_divergence(
-        target_distributions.base_dist, fixed_std_distribution.base_dist
+        target_indep_dist.base_dist, fixed_std_dist.base_dist
       )
       kl_std = torch.distributions.kl.kl_divergence(
-        target_distributions.base_dist, fixed_mean_distribution.base_dist
+        target_indep_dist.base_dist, fixed_mean_dist.base_dist
       )
     else:
-      kl_mean = torch.distributions.kl.kl_divergence(target_distributions, fixed_std_distribution)
-      kl_std = torch.distributions.kl.kl_divergence(
-        target_distributions, fixed_mean_distribution
-      )
+      kl_mean = torch.distributions.kl.kl_divergence(target_indep_dist, fixed_std_dist)
+      kl_std = torch.distributions.kl.kl_divergence(target_indep_dist, fixed_mean_dist)
 
     # Compute the alpha-weighted KL-penalty and dual losses.
     kl_mean_loss, alpha_mean_loss = parametric_kl_and_dual_losses(
