@@ -12,12 +12,12 @@ from tonic.torch import agent, explorations, models, replays, updaters
 def d4pg_default_model():
   return models.ActorCriticWithTargets(
     actor=models.Actor(
-      encoder=models.BoxObservationEncoder(),
+      encoder=models.ObservationEncoder(),
       torso=models.MLP((256, 256), torch.nn.ReLU),
       head=models.DeterministicPolicyHead(),
     ),
     critic=models.Critic(
-      encoder=models.BoxObservationActionEncoder(),
+      encoder=models.ObservationActionEncoder(),
       torso=models.MLP((256, 256), torch.nn.ReLU),
       # These values are for the control suite with 0.99 discount.
       head=models.DistributionalValueHead(-150., 150., 51),

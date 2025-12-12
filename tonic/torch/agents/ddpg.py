@@ -12,12 +12,12 @@ from tonic.torch import agent, explorations, models, replays, updaters
 def ddpg_default_model():
   return models.ActorCriticWithTargets(
     actor=models.Actor(
-      encoder=models.BoxObservationEncoder(),
+      encoder=models.ObservationEncoder(),
       torso=models.MLP((256, 256), torch.nn.ReLU),
       head=models.DeterministicPolicyHead(),
     ),
     critic=models.Critic(
-      encoder=models.BoxObservationActionEncoder(),
+      encoder=models.ObservationActionEncoder(),
       torso=models.MLP((256, 256), torch.nn.ReLU),
       head=models.ValueHead(),
     ),

@@ -12,7 +12,7 @@ from tonic.torch import agent, explorations, models, replays, updaters
 def sac_default_model():
   return models.ActorTwinCriticWithTargets(
     actor=models.Actor(
-      encoder=models.BoxObservationEncoder(),
+      encoder=models.ObservationEncoder(),
       torso=models.MLP((256, 256), torch.nn.ReLU),
       head=models.StochasticPolicyHead(
         mean_activation=torch.nn.Identity,
@@ -20,7 +20,7 @@ def sac_default_model():
       ),
     ),
     critic=models.Critic(
-      encoder=models.BoxObservationActionEncoder(),
+      encoder=models.ObservationActionEncoder(),
       torso=models.MLP((256, 256), torch.nn.ReLU),
       head=models.ValueHead(),
     ),

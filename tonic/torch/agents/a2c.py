@@ -12,12 +12,12 @@ from tonic.torch import agent, models, replays, updaters
 def a2c_default_model():
   return models.ActorCritic(
     actor=models.Actor(
-      encoder=models.BoxObservationEncoder(),
+      encoder=models.ObservationEncoder(),
       torso=models.MLP((64, 64), torch.nn.Tanh),
       head=models.StochasticDetachedStdPolicyHead(),
     ),
     critic=models.Critic(
-      encoder=models.BoxObservationEncoder(),
+      encoder=models.ObservationEncoder(),
       torso=models.MLP((64, 64), torch.nn.Tanh),
       head=models.ValueHead(),
     ),

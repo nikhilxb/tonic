@@ -12,8 +12,7 @@ from .critics import CriticLike, Critic, CriticEncoder, CriticTorso, CriticHead
 from .critics import ValueHead, DistributionalValueHead
 from .critics import CategoricalValueDistribution
 
-from .encoders import BoxObservationEncoder, BoxObservationActionEncoder
-from .encoders import DictObservationEncoder, DictObservationActionEncoder
+from .encoders import ObservationEncoder, ObservationActionEncoder
 
 from .networks import MLP
 

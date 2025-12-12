@@ -12,12 +12,12 @@ from tonic.torch import agent, models, replays, updaters
 def mpo_default_model():
   return models.ActorCriticWithTargets(
     actor=models.Actor(
-      encoder=models.BoxObservationEncoder(),
+      encoder=models.ObservationEncoder(),
       torso=models.MLP((256, 256), torch.nn.ReLU),
       head=models.StochasticPolicyHead(),
     ),
     critic=models.Critic(
-      encoder=models.BoxObservationActionEncoder(),
+      encoder=models.ObservationActionEncoder(),
       torso=models.MLP((256, 256), torch.nn.ReLU),
       head=models.ValueHead(),
     ),

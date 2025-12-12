@@ -598,6 +598,7 @@ class MaximumAPosterioriPolicyOptimization:
     self.actor_variables = models.trainable_variables(self.model.actor)
     self.actor_optimizer = self.actor_optimizer_builder(self.actor_variables)
     
+    self.action_space = action_space
     action_space_box = space.pack_space(action_space)
     action_size = action_space_box.shape[0]
 
@@ -710,7 +711,7 @@ class MaximumAPosterioriPolicyOptimization:
     alpha_std = torch.nn.functional.softplus(self.log_alpha_std) + EPS
     weights, temperature_loss = weights_and_temperature_loss(values, self.epsilon, temperature)
 
-    flat_actions = space.pack_tensors(actions)  # [num, batch, action]
+    flat_actions = space.pack_tensors(self.action_space, actions)  # [num, batch, action]
 
     # Action penalization is quadratic beyond [-1, 1].
     if self.action_penalization:
