@@ -488,7 +488,7 @@ class ActorTorso(T.Protocol):
 
 
 class ActorHead(T.Protocol):
-  def initialize(self, input_size: int, action_space: gym.spaces.Box | gym.spaces.Dict) -> None:
+  def initialize(self, input_size: int, action_space: agent.ActionSpace) -> None:
     ...
 
   def forward(self, inputs: T.Any) -> T.Any:

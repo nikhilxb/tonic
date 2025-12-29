@@ -42,7 +42,7 @@ class ActorOnly(torch.nn.Module):
     action_space: agent.ActionSpace,
   ) -> None:
     if self.observation_normalizer:
-      self.observation_normalizer.initialize(observation_space)  # type: ignore
+      self.observation_normalizer.initialize(observation_space)
     self.actor.initialize(
       observation_space,
       action_space,
@@ -72,7 +72,7 @@ class ActorCritic(torch.nn.Module):
     action_space: agent.ActionSpace,
   ) -> None:
     if self.observation_normalizer:
-      self.observation_normalizer.initialize(observation_space)  # type: ignore
+      self.observation_normalizer.initialize(observation_space)
     self.actor.initialize(
       observation_space,
       action_space,
@@ -112,7 +112,7 @@ class ActorCriticWithTargets(torch.nn.Module):
     action_space: agent.ActionSpace,
   ) -> None:
     if self.observation_normalizer:
-      self.observation_normalizer.initialize(observation_space)  # type: ignore
+      self.observation_normalizer.initialize(observation_space)
     self.actor.initialize(
       observation_space,
       action_space,
@@ -188,7 +188,7 @@ class ActorTwinCriticWithTargets(torch.nn.Module):
     action_space: agent.ActionSpace,
   ) -> None:
     if self.observation_normalizer:
-      self.observation_normalizer.initialize(observation_space)  # type: ignore
+      self.observation_normalizer.initialize(observation_space)
     self.actor.initialize(
       observation_space,
       action_space,
