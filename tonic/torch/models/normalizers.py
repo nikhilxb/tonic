@@ -64,14 +64,6 @@ class MeanStdNormalizer(torch.nn.Module):
     self._eps = 1e-2
     self._freeze = freeze
 
-  @T.overload
-  def initialize(self, observation_space: gym.spaces.Box) -> None:
-    ...
-  
-  @T.overload
-  def initialize(self, observation_space: gym.spaces.Dict) -> T.NoReturn:
-    ...
-  
   def initialize(self, observation_space: agent.ObservationSpace) -> None:
     """
     Args:
@@ -83,26 +75,10 @@ class MeanStdNormalizer(torch.nn.Module):
     self.mean = mean
     self.mean_sq = mean.square()
     self.std = self.std.broadcast_to(shape).clone()
-
-  @T.overload
-  def __call__(self, obs: torch.Tensor) -> torch.Tensor:
-    ...
   
-  @T.overload
-  def __call__(self, obs: dict[str, torch.Tensor]) -> T.NoReturn:
-    ...
-  
-  def __call__(self, obs):
+  def __call__(self, obs) -> torch.Tensor:
     return self.forward(obs)
   
-  @T.overload
-  def forward(self, obs: torch.Tensor) -> torch.Tensor:
-    ...
-
-  @T.overload
-  def forward(self, obs: dict[str, torch.Tensor]) -> T.NoReturn:
-    ...
-
   @torch.no_grad()
   def forward(self, obs) -> torch.Tensor:
     """
@@ -114,14 +90,6 @@ class MeanStdNormalizer(torch.nn.Module):
     """
     obs = (obs - self.mean) / self.std
     return torch.clamp(obs, -self._clip, self._clip) if self._clip is not None else obs
-
-  @T.overload
-  def unnormalize(self, obs: torch.Tensor) -> torch.Tensor:
-    ...
-  
-  @T.overload
-  def unnormalize(self, obs: dict[str, torch.Tensor]) -> T.NoReturn:
-    ...
   
   @torch.no_grad()
   def unnormalize(self, obs) -> torch.Tensor:
@@ -133,14 +101,6 @@ class MeanStdNormalizer(torch.nn.Module):
       Unnormalized observation `[batch_size, ...]`.
     """
     return obs * self.std + self.mean
-
-  @T.overload
-  def record(self, obs: torch.Tensor) -> None:
-    ...
-  
-  @T.overload
-  def record(self, obs: dict[str, torch.Tensor]) -> T.NoReturn:
-    ...
   
   @torch.no_grad()
   def record(self, obs) -> None:
@@ -204,14 +164,6 @@ class NegPosNormalizer(torch.nn.Module):
     self._new_max = torch.as_tensor(max, dtype=torch.float)
     self._freeze = freeze
 
-  @T.overload
-  def initialize(self, observation_space: gym.spaces.Box) -> None:
-    ...
-  
-  @T.overload
-  def initialize(self, observation_space: gym.spaces.Dict) -> T.NoReturn:
-    ...
-  
   def initialize(self, observation_space: agent.ObservationSpace) -> None:
     """
     Args:
@@ -227,25 +179,9 @@ class NegPosNormalizer(torch.nn.Module):
     self.min = min
     self.mid = mid
     self.max = max
-
-  @T.overload
-  def __call__(self, obs: torch.Tensor) -> torch.Tensor:
-    ...
-  
-  @T.overload
-  def __call__(self, obs: dict[str, torch.Tensor]) -> T.NoReturn:
-    ...
   
   def __call__(self, obs) -> torch.Tensor:
     return self.forward(obs)
-  
-  @T.overload
-  def forward(self, obs: torch.Tensor) -> torch.Tensor:
-    ...
-  
-  @T.overload
-  def forward(self, obs: dict[str, torch.Tensor]) -> T.NoReturn:
-    ...
   
   @torch.no_grad()
   def forward(self, obs) -> torch.Tensor:
@@ -263,14 +199,6 @@ class NegPosNormalizer(torch.nn.Module):
     pos = (obs >= self.mid).float() * (obs - self.mid) / (self.max - self.mid)
     obs = torch.nan_to_num(neg, 0, 0, 0) + torch.nan_to_num(pos, 0, 0, 0)
     return obs
-
-  @T.overload
-  def unnormalize(self, obs: torch.Tensor) -> torch.Tensor:
-    ...
-  
-  @T.overload
-  def unnormalize(self, obs: dict[str, torch.Tensor]) -> T.NoReturn:
-    ...
   
   @torch.no_grad()
   def unnormalize(self, obs) -> torch.Tensor:
@@ -287,14 +215,6 @@ class NegPosNormalizer(torch.nn.Module):
     obs = ((obs < 0).float() * (self.min + (obs + 1) * (self.mid - self.min)) +
             (obs >= 0).float() * (self.mid + obs * (self.max - self.mid)))
     return obs
-
-  @T.overload
-  def record(self, obs: torch.Tensor) -> None:
-    ...
-  
-  @T.overload
-  def record(self, obs: dict[str, torch.Tensor]) -> T.NoReturn:
-    ...
   
   @torch.no_grad()
   def record(self, obs) -> None:
@@ -342,14 +262,6 @@ class DictNormalizer(torch.nn.Module):
     self.normalizer_builder = normalizer_builder
     self.normalizers: dict[str, BoxNormalizer] = torch.nn.ModuleDict()  # type: ignore
 
-  @T.overload
-  def initialize(self, observation_space: gym.spaces.Dict) -> None:
-    ...
-  
-  @T.overload
-  def initialize(self, observation_space: gym.spaces.Box) -> T.NoReturn:
-    ...
-
   def initialize(self, observation_space: agent.ObservationSpace) -> None:
     """
     Args:
@@ -365,25 +277,9 @@ class DictNormalizer(torch.nn.Module):
       if normalizer is None: continue
       normalizer.initialize(o)
       self.normalizers[key] = normalizer
-
-  @T.overload
-  def __call__(self, obs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    ...
-  
-  @T.overload
-  def __call__(self, obs: torch.Tensor) -> T.NoReturn:
-    ...
   
   def __call__(self, obs) -> dict[str, torch.Tensor]:
     return self.forward(obs)
-  
-  @T.overload
-  def forward(self, obs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    ...
-  
-  @T.overload
-  def forward(self, obs: torch.Tensor) -> T.NoReturn:
-    ...
   
   @torch.no_grad()
   def forward(self, obs) -> dict[str, torch.Tensor]:
@@ -399,14 +295,6 @@ class DictNormalizer(torch.nn.Module):
       if key in self.normalizers:
         obs[key] = self.normalizers[key](o)
     return obs
-
-  @T.overload
-  def unnormalize(self, obs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    ...
-  
-  @T.overload
-  def unnormalize(self, obs: torch.Tensor) -> T.NoReturn:
-    ...
   
   @torch.no_grad()
   def unnormalize(self, obs) -> dict[str, torch.Tensor]:
@@ -422,14 +310,6 @@ class DictNormalizer(torch.nn.Module):
       if key in self.normalizers:
         obs[key] = self.normalizers[key].unnormalize(o)
     return obs
-
-  @T.overload
-  def record(self, obs: dict[str, torch.Tensor]) -> None:
-    ...
-  
-  @T.overload
-  def record(self, obs: torch.Tensor) -> T.NoReturn:
-    ...
   
   @torch.no_grad()
   def record(self, obs) -> None:
@@ -488,18 +368,18 @@ class DiscountedMinMaxNormalizer(torch.nn.Module):
     self._new_max = torch.tensor(1., dtype=torch.float)
 
   @torch.no_grad()
-  def forward(self, val: torch.Tensor) -> torch.Tensor:
+  def forward(self, values: torch.Tensor) -> torch.Tensor:
     """
     Args:
-      val: Return value tensor `[batch_size]` (unbounded).
+      values: Return value tensor `[batch_size]` (unbounded).
       
     Returns:
       Normalized return `[batch_size]` scaled to discounted bounds `[coefficient * min, coefficient * max]`.
     """
-    val = torch.sigmoid(val)  # [batch_size] -> [0, 1]
+    values = torch.sigmoid(values)  # [batch_size] -> [0, 1]
     low = self._coefficient * self.min  # Discounted lower bound
     high = self._coefficient * self.max  # Discounted upper bound
-    return low + val * (high - low)  # [batch_size]
+    return low + values * (high - low)  # [batch_size]
 
   @torch.no_grad()
   def record(self, values: torch.Tensor) -> None:
@@ -507,12 +387,12 @@ class DiscountedMinMaxNormalizer(torch.nn.Module):
     Args:
       values: Return batch `[batch_size]`.
     """
-    min_val = torch.min(values)  # []
-    max_val = torch.max(values)  # []
-    if min_val < self._new_min:
-      self._new_min = min_val
-    if max_val > self._new_max:
-      self._new_max = max_val
+    min_vals = torch.min(values)  # []
+    max_vals = torch.max(values)  # []
+    if min_vals < self._new_min:
+      self._new_min = min_vals
+    if max_vals > self._new_max:
+      self._new_max = max_vals
 
   @torch.no_grad()
   def update(self) -> None:
